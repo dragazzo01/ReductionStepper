@@ -58,10 +58,17 @@ pub enum Expr {
     /// semantic weight — see `HighlightColor` for what each color means and how long
     /// it lives.
     Highlighted(Box<Expr>, HighlightColor),
+    /// `case e of p1 => e1 | p2 => e2 | ...`, always one or more arms. Tries each
+    /// arm's pattern against `e` in order once `e` is a value, and reduces to the
+    /// first matching arm's expression with that pattern's bindings substituted
+    /// in — see `stepping::subst::try_match`. No exhaustiveness checking: a value
+    /// matching no arm is a runtime match failure, same treatment `destructure`
+    /// already gives an unmatched literal `val` pattern.
+    Match(Box<Expr>, Vec<(Pattern, Expr)>),
 }
 
-/// The left-hand side of a `val` declaration. `match` expressions (and the richer
-/// patterns they'll eventually need) come later.
+/// The left-hand side of a `val` declaration; also what each arm of a `case`
+/// expression (`Expr::Match`) matches against.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     Ident(String),

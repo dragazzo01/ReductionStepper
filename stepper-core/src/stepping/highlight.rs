@@ -1,4 +1,4 @@
-use crate::ast::{Decl, Expr, HighlightColor, Program};
+use crate::ast::{Decl, Expr, HighlightColor, Pattern, Program};
 
 use super::eval::is_value;
 
@@ -61,6 +61,7 @@ fn highlight_next_expr(expr: &Expr) -> Option<Expr> {
         }
         Expr::Let(decls, body) => highlight_next_let(expr, decls, body),
         Expr::Tuple(items) => highlight_next_tuple(items),
+        Expr::Match(scrutinee, arms) => highlight_next_match(expr, scrutinee, arms),
     }
 }
 
@@ -139,6 +140,18 @@ fn highlight_next_if(
         ));
     }
     // The condition is ready: `whole` (the If itself) is the next redex.
+    Some(Expr::Highlighted(Box::new(whole.clone()), HighlightColor::Yellow))
+}
+
+/// Mirrors `step_match`'s search: only the scrutinee is ever searched into (which
+/// arm ends up chosen depends on the scrutinee's *value*, not on anything
+/// highlighting can see ahead of time); once it's a value, `whole` (the entire
+/// `Match`) is the next redex.
+fn highlight_next_match(whole: &Expr, scrutinee: &Expr, arms: &[(Pattern, Expr)]) -> Option<Expr> {
+    if !is_value(scrutinee) {
+        let new_scrutinee = highlight_next_expr(scrutinee)?;
+        return Some(Expr::Match(Box::new(new_scrutinee), arms.to_vec()));
+    }
     Some(Expr::Highlighted(Box::new(whole.clone()), HighlightColor::Yellow))
 }
 

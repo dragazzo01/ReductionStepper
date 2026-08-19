@@ -155,6 +155,32 @@ fn pretty_print_expr_prec(expr: &Expr, min_prec: u8) -> String {
                 .join(", ");
             format!("({items_str})")
         }
+        Expr::Match(scrutinee, arms) => {
+            // Bracketed by `case`/`of` on the left but open-ended on the right (no
+            // `end`), matching real SML — so, like `If`, this needs parens as soon
+            // as it sits inside anything else. The scrutinee and each arm's body
+            // print unrestricted (0), since the keywords/`=>`/`|` already delimit
+            // them; a nested `case` as the last arm's body prints bare and simply
+            // absorbs any further `|` arms, mirroring the grammar's own shift
+            // preference (see grammar.y's `MatchArms`).
+            let arms_str = arms
+                .iter()
+                .map(|(pat, arm_expr)| {
+                    format!(
+                        "{} => {}",
+                        pretty_print_pattern(pat),
+                        pretty_print_expr_prec(arm_expr, 0)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" | ");
+            let body = format!(
+                "case {} of {}",
+                pretty_print_expr_prec(scrutinee, 0),
+                arms_str
+            );
+            if 0 < min_prec { format!("({body})") } else { body }
+        }
         Expr::Let(decls, body) => {
             // Bracketed by `let`/`end` on both sides, so — unlike `if` — this is
             // atomic from the outside: never needs its own wrapping parens

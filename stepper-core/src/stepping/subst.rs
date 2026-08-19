@@ -87,6 +87,24 @@ pub fn substitute(expr: &Expr, name: &str, value: &Expr) -> Expr {
         Expr::Tuple(items) => Expr::Tuple(
             items.iter().map(|item| substitute(item, name, value)).collect(),
         ),
+        Expr::Match(scrutinee, arms) => {
+            // Each arm is its own independent scope (unlike `let`'s decls, which
+            // chain into one another): an arm whose pattern rebinds `name` is
+            // shadowed for that arm alone, and doesn't affect its siblings.
+            let new_scrutinee = substitute(scrutinee, name, value);
+            let new_arms = arms
+                .iter()
+                .map(|(pat, arm_expr)| {
+                    let new_expr = if pattern_binds(pat, name) {
+                        arm_expr.clone()
+                    } else {
+                        substitute(arm_expr, name, value)
+                    };
+                    (pat.clone(), new_expr)
+                })
+                .collect();
+            Expr::Match(Box::new(new_scrutinee), new_arms)
+        }
     }
 }
 
@@ -102,53 +120,54 @@ fn pattern_binds(pat: &Pattern, name: &str) -> bool {
 }
 
 /// Matches `pat` against `value` — which must already be a value (see
-/// `eval::is_value`), since patterns only ever destructure a decl's fully-reduced
-/// right-hand side — returning each identifier `pat` binds paired with the
-/// sub-expression it binds to, in the pattern's left-to-right order. `Wildcard` and
-/// a matching literal both contribute nothing.
+/// `eval::is_value`), since patterns only ever match a fully-reduced expression —
+/// returning each identifier `pat` binds paired with the sub-expression it binds
+/// to, in the pattern's left-to-right order, or `None` if a literal pattern
+/// doesn't match `value`. `Wildcard` and a matching literal both contribute
+/// nothing (`Some(vec![])`, not `None`).
 ///
 /// The typechecker has already ruled out any *shape* mismatch (a `Tuple` pattern
 /// only ever reaches here against an `Expr::Tuple` of the same arity, `IntConst`
 /// only against an `Expr::IntConst`, etc.), so those are `unreachable!()`, not a
-/// panic message — a well-typed program can't hit them. A literal *value*
-/// mismatch is different: no typechecker can rule out `val 5 = 2 + 2` ahead of
-/// time, so that's a genuine runtime condition. Real SML raises `Bind` there;
-/// until this project has exceptions (see `HighlightColor::Red`) that's a panic
-/// instead of a silent non-substitution.
-pub(super) fn destructure(pat: &Pattern, value: &Expr) -> Vec<(String, Expr)> {
+/// `None` — a well-typed program can't hit them. A literal *value* mismatch is
+/// different: no typechecker can rule out e.g. `val 5 = 2 + 2` ahead of time, so
+/// that's a genuine runtime condition callers decide how to handle — `destructure`
+/// treats it as fatal (there's only ever one pattern to satisfy), while
+/// `stepping::eval::step_match` uses `None` here to move on and try the next arm.
+pub(super) fn try_match(pat: &Pattern, value: &Expr) -> Option<Vec<(String, Expr)>> {
     match pat {
-        Pattern::Wildcard => Vec::new(),
-        Pattern::Ident(name) => vec![(name.clone(), value.clone())],
+        Pattern::Wildcard => Some(Vec::new()),
+        Pattern::Ident(name) => Some(vec![(name.clone(), value.clone())]),
         Pattern::IntConst(n) => {
             let Expr::IntConst(v) = value else { unreachable!("typechecked: IntConst pattern only meets an int") };
-            if v != n {
-                panic!(
-                    "Bind failure: pattern `{}` does not match value `{}`",
-                    pretty_print_pattern(pat),
-                    pretty_print_expr(value)
-                );
-            }
-            Vec::new()
+            (v == n).then(Vec::new)
         }
         Pattern::BoolConst(b) => {
             let Expr::BoolConst(v) = value else { unreachable!("typechecked: BoolConst pattern only meets a bool") };
-            if v != b {
-                panic!(
-                    "Bind failure: pattern `{}` does not match value `{}`",
-                    pretty_print_pattern(pat),
-                    pretty_print_expr(value)
-                );
-            }
-            Vec::new()
+            (v == b).then(Vec::new)
         }
         Pattern::Tuple(pats) => {
             let Expr::Tuple(values) = value else { unreachable!("typechecked: Tuple pattern only meets a same-arity tuple") };
-            pats.iter()
-                .zip(values)
-                .flat_map(|(p, v)| destructure(p, v))
-                .collect()
+            let mut bindings = Vec::new();
+            for (p, v) in pats.iter().zip(values) {
+                bindings.extend(try_match(p, v)?);
+            }
+            Some(bindings)
         }
     }
+}
+
+/// `val` decls only ever have one pattern to satisfy, so a mismatch here is
+/// unconditionally fatal — real SML raises `Bind`; until this project has
+/// exceptions (see `HighlightColor::Red`) that's a panic instead.
+pub(super) fn destructure(pat: &Pattern, value: &Expr) -> Vec<(String, Expr)> {
+    try_match(pat, value).unwrap_or_else(|| {
+        panic!(
+            "Bind failure: pattern `{}` does not match value `{}`",
+            pretty_print_pattern(pat),
+            pretty_print_expr(value)
+        )
+    })
 }
 
 /// Substitute `name = value` into each decl in `decls` in order, stopping as soon

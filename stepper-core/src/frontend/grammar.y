@@ -1,5 +1,7 @@
 %start Program
 %nonassoc 'ELSE'
+%nonassoc 'OF' '=>'
+%left '|'
 %right 'ORELSE'
 %right 'ANDALSO'
 %nonassoc '=' '<>' '<' '<=' '>' '>='
@@ -111,6 +113,7 @@ Expr -> Expr:
     | 'IF' Expr 'THEN' Expr 'ELSE' Expr
       { Expr::If(Box::new($2), Box::new($4), Box::new($6)) }
     | 'LET' Program 'IN' Expr 'END' { Expr::Let($2, Box::new($4)) }
+    | 'CASE' Expr 'OF' MatchArms { Expr::Match(Box::new($2), $4) }
     | '(' Expr ')' { $2 }
     | '(' TupleItems ')' { Expr::Tuple($2) }
     | 'TRUE' { Expr::BoolConst(true) }
@@ -130,6 +133,17 @@ Expr -> Expr:
 TupleItems -> Vec<Expr>:
       Expr ',' Expr { vec![$1, $3] }
     | TupleItems ',' Expr { let mut v = $1; v.push($3); v }
+    ;
+
+/// Left-recursive, same shape as `TupleItems`/`TypeProduct`. `'|'` is declared
+/// with higher precedence than `'OF'`/`'=>'` (see the precedence block above) so
+/// that a trailing `| pat => expr` always shifts onto the *innermost* open
+/// `case`'s `MatchArms` rather than closing it and attaching to an outer one —
+/// same "nearest wins" resolution real SML uses, and the same shift-preferring
+/// trick `'ELSE'` uses to resolve dangling-else.
+MatchArms -> Vec<(Pattern, Expr)>:
+      Pattern '=>' Expr { vec![($1, $3)] }
+    | MatchArms '|' Pattern '=>' Expr { let mut v = $1; v.push(($3, $5)); v }
     ;
 %%
 use super::ast::{Decl, Expr, Pattern, Type};

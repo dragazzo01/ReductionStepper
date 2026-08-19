@@ -76,6 +76,20 @@ fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
         Ok(Type::Product(types.into_iter().map(Box::new).collect()))
     },
     Expr::Highlighted(expr, _) => infer_expr_type(env, expr),
+    Expr::Match(scrutinee, arms) => {
+        let scrutinee_ty = infer_expr_type(env, scrutinee)?;
+        let (first_pat, first_expr) = arms.first()
+            .expect("grammar: MatchArms always has at least one arm");
+        let mut arm_env = env.clone();
+        bind_pattern(&mut arm_env, &mut HashSet::new(), first_pat, &scrutinee_ty)?;
+        let result_ty = infer_expr_type(&arm_env, first_expr)?;
+        for (pat, arm_expr) in &arms[1..] {
+            let mut arm_env = env.clone();
+            bind_pattern(&mut arm_env, &mut HashSet::new(), pat, &scrutinee_ty)?;
+            check_expr_type(&arm_env, arm_expr, &result_ty)?;
+        }
+        Ok(result_ty)
+    },
     }
 }
 

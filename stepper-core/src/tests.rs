@@ -1277,3 +1277,202 @@ fn stepping_let_destructures_a_tuple_pattern() {
     assert_eq!(step2.message, "Evaluated 1 + 2 to 3");
     assert_eq!(pretty::pretty_print(&step2.program), "val z = 3");
 }
+
+#[test]
+fn grammar_parses_a_case_expression() {
+    let program = parse_program("val x = case 1 of 0 => true | _ => false").unwrap();
+    assert_eq!(
+        program[0].expr,
+        ast::Expr::Match(
+            Box::new(ast::Expr::IntConst(1)),
+            vec![
+                (ast::Pattern::IntConst(0), ast::Expr::BoolConst(true)),
+                (ast::Pattern::Wildcard, ast::Expr::BoolConst(false)),
+            ],
+        )
+    );
+}
+
+#[test]
+fn grammar_case_arm_body_extends_greedily_across_operators() {
+    // Like the else-branch of `if`, an arm's body should keep consuming "+ 1"
+    // rather than the whole case-expression becoming the left operand of +.
+    let program = parse_program("val x = case 1 of _ => 2 + 1").unwrap();
+    assert_eq!(
+        program[0].expr,
+        ast::Expr::Match(
+            Box::new(ast::Expr::IntConst(1)),
+            vec![(
+                ast::Pattern::Wildcard,
+                ast::Expr::Add(Box::new(ast::Expr::IntConst(2)), Box::new(ast::Expr::IntConst(1))),
+            )],
+        )
+    );
+}
+
+#[test]
+fn grammar_nested_case_dangling_bar_attaches_to_the_innermost_case() {
+    // Without parens, a trailing "| p3 => c" after a nested case should attach to
+    // the *inner* case (shift-preferred, same "nearest wins" rule real SML uses
+    // for this — mirrors dangling-else), not float out to the outer one.
+    let program = parse_program(
+        "val x = case 1 of a => case 2 of b => 10 | c => 20 | d => 30",
+    )
+    .unwrap();
+    assert_eq!(
+        program[0].expr,
+        ast::Expr::Match(
+            Box::new(ast::Expr::IntConst(1)),
+            vec![(
+                ast::Pattern::Ident("a".to_string()),
+                ast::Expr::Match(
+                    Box::new(ast::Expr::IntConst(2)),
+                    vec![
+                        (ast::Pattern::Ident("b".to_string()), ast::Expr::IntConst(10)),
+                        (ast::Pattern::Ident("c".to_string()), ast::Expr::IntConst(20)),
+                        (ast::Pattern::Ident("d".to_string()), ast::Expr::IntConst(30)),
+                    ],
+                ),
+            )],
+        )
+    );
+}
+
+#[test]
+fn grammar_parens_let_a_trailing_bar_attach_to_the_outer_case() {
+    // Explicit parens around the inner case override the default "nearest wins"
+    // attachment, letting "| c => 20" belong to the outer case instead.
+    let program = parse_program(
+        "val x = case 1 of a => (case 2 of b => 10) | c => 20",
+    )
+    .unwrap();
+    assert_eq!(
+        program[0].expr,
+        ast::Expr::Match(
+            Box::new(ast::Expr::IntConst(1)),
+            vec![
+                (
+                    ast::Pattern::Ident("a".to_string()),
+                    ast::Expr::Match(
+                        Box::new(ast::Expr::IntConst(2)),
+                        vec![(ast::Pattern::Ident("b".to_string()), ast::Expr::IntConst(10))],
+                    ),
+                ),
+                (ast::Pattern::Ident("c".to_string()), ast::Expr::IntConst(20)),
+            ],
+        )
+    );
+}
+
+#[test]
+fn pretty_prints_case_bare_at_top_level() {
+    assert_eq!(
+        pretty::pretty_print(&parse_program("val x = case 1 of 0 => true | _ => false").unwrap()),
+        "val x = case 1 of 0 => true | _ => false"
+    );
+}
+
+#[test]
+fn pretty_prints_case_needs_parens_as_an_operand() {
+    assert_eq!(
+        pretty::pretty_print(
+            &parse_program("val x = (case 1 of _ => 1) + 1").unwrap()
+        ),
+        "val x = (case 1 of _ => 1) + 1"
+    );
+}
+
+#[test]
+fn typecheck_case_requires_every_arm_to_produce_the_same_type() {
+    let program = parse_program("val x = case 1 of 0 => true | _ => 1").unwrap();
+    assert_eq!(
+        typecheck(&program),
+        Some("Expected Bool but got type Int".to_string())
+    );
+}
+
+#[test]
+fn typecheck_case_binds_pattern_variables_within_their_own_arm_only() {
+    let program = parse_program("val x = case (1, 2) of (a, b) => a + b").unwrap();
+    assert_eq!(typecheck(&program), None);
+
+    let leaks = parse_program("val x = (case (1, 2) of (a, b) => a + b) + a").unwrap();
+    assert_eq!(typecheck(&leaks), Some("Unbound identifier: a".to_string()));
+}
+
+#[test]
+fn typecheck_case_scrutinee_and_patterns_must_agree_in_type() {
+    let program = parse_program("val x = case true of 0 => 1 | _ => 2").unwrap();
+    assert!(matches!(typecheck(&program), Some(msg) if msg.starts_with("Expected")));
+}
+
+#[test]
+fn stepping_case_reduces_scrutinee_before_selecting_an_arm() {
+    let program = parse_program("val x = case 1 + 1 of 2 => 10 | _ => 20").unwrap();
+
+    let step1 = stepping::step(&program).unwrap();
+    assert_eq!(step1.message, "Evaluated 1 + 1 to 2");
+    assert_eq!(
+        pretty::pretty_print(&step1.program),
+        "val x = case 2 of 2 => 10 | _ => 20"
+    );
+
+    let step2 = stepping::step(&step1.program).unwrap();
+    assert_eq!(step2.message, "Substituted 2 = 2");
+    assert_eq!(pretty::pretty_print(&step2.program), "val x = 10");
+}
+
+#[test]
+fn stepping_case_tries_arms_in_order_and_stops_at_the_first_match() {
+    let program = parse_program("val x = case 5 of 0 => 1 | _ => 2").unwrap();
+    assert_eq!(run_to_value(program), "val x = 2");
+}
+
+#[test]
+fn stepping_case_binds_pattern_variables_into_the_chosen_arm() {
+    use pretty::{GREEN_END, GREEN_START};
+
+    let program = parse_program("val x = case (1, 2) of (a, b) => a + b").unwrap();
+    let step1 = stepping::step(&program).unwrap();
+    assert_eq!(step1.message, "Substituted (a, b) = (1, 2)");
+    assert_eq!(
+        pretty::pretty_print(&step1.program),
+        format!("val x = {GREEN_START}1{GREEN_END} + {GREEN_START}2{GREEN_END}")
+    );
+
+    let step2 = stepping::step(&step1.program).unwrap();
+    assert_eq!(step2.message, "Evaluated 1 + 2 to 3");
+    assert_eq!(pretty::pretty_print(&step2.program), "val x = 3");
+}
+
+#[test]
+fn stepping_case_unmatched_arm_variables_are_not_substituted() {
+    // Only the chosen arm's bindings should ever reach substitution; a variable
+    // with the same name in a discarded arm must not leak in.
+    let program = parse_program("val x = case 1 of 1 => 10 | y => y").unwrap();
+    assert_eq!(run_to_value(program), "val x = 10");
+}
+
+#[test]
+#[should_panic(expected = "Match failure")]
+fn stepping_case_panics_on_no_matching_arm() {
+    let program = parse_program("val x = case 1 of 0 => 10").unwrap();
+    stepping::step(&program);
+}
+
+#[test]
+fn highlight_next_case_highlights_the_scrutinee_then_the_whole_match() {
+    use pretty::{HIGHLIGHT_END, HIGHLIGHT_START};
+
+    let program = parse_program("val x = case 1 + 1 of 2 => 10 | _ => 20").unwrap();
+    assert_eq!(
+        render_next(&program),
+        format!("val x = case {HIGHLIGHT_START}1 + 1{HIGHLIGHT_END} of 2 => 10 | _ => 20")
+    );
+
+    let step1 = stepping::step(&program).unwrap();
+    assert_eq!(
+        render_next(&step1.program),
+        format!("val x = {HIGHLIGHT_START}case 2 of 2 => 10 | _ => 20{HIGHLIGHT_END}")
+    );
+}

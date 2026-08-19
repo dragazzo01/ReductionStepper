@@ -1,7 +1,7 @@
-use crate::ast::{Decl, Expr, Program};
+use crate::ast::{Decl, Expr, Pattern, Program};
 use crate::pretty::{pretty_print_expr, pretty_print_pattern};
 
-use super::subst::{destructure, substitute, substitute_into_decls};
+use super::subst::{destructure, substitute, substitute_into_decls, try_match};
 
 #[derive(Debug, PartialEq)]
 pub struct StepOutcome {
@@ -85,6 +85,12 @@ fn strip_highlight_expr(expr: &Expr) -> Expr {
             Box::new(strip_highlight_expr(body)),
         ),
         Expr::Tuple(items) => Expr::Tuple(items.iter().map(strip_highlight_expr).collect()),
+        Expr::Match(scrutinee, arms) => Expr::Match(
+            Box::new(strip_highlight_expr(scrutinee)),
+            arms.iter()
+                .map(|(pat, arm_expr)| (pat.clone(), strip_highlight_expr(arm_expr)))
+                .collect(),
+        ),
     }
 }
 
@@ -150,6 +156,7 @@ fn step_expr(expr: &Expr) -> Option<(Expr, String)> {
         Expr::If(cond, then_branch, else_branch) => step_if(cond, then_branch, else_branch),
         Expr::Let(decls, body) => step_let(decls, body),
         Expr::Tuple(items) => step_tuple(items),
+        Expr::Match(scrutinee, arms) => step_match(scrutinee, arms),
     }
 }
 
@@ -316,6 +323,42 @@ fn step_let(decls: &[Decl], body: &Expr) -> Option<(Expr, String)> {
     } else {
         Some((Expr::Let(rest_decls, Box::new(new_body)), message))
     }
+}
+
+/// `case e of p1 => e1 | ...`: reduce `e` first; once it's a value, find the
+/// first arm whose pattern matches it (`subst::try_match`, tried in order) and
+/// replace the whole `Match` with that arm's expression, substituting the
+/// pattern's bindings into it — the same substitution a `val` decl gets (see
+/// `step_let`), just chosen from several candidate patterns instead of the one.
+/// No arm matching is a runtime match failure (SML's `Match` exception); until
+/// this project has exceptions (see `HighlightColor::Red`) that's a panic, same
+/// treatment `destructure` gives an unmatched literal `val` pattern.
+fn step_match(scrutinee: &Expr, arms: &[(Pattern, Expr)]) -> Option<(Expr, String)> {
+    if !is_value(scrutinee) {
+        let (new_scrutinee, msg) = step_expr(scrutinee)?;
+        return Some((Expr::Match(Box::new(new_scrutinee), arms.to_vec()), msg));
+    }
+
+    let (pat, arm_expr, bindings) = arms
+        .iter()
+        .find_map(|(pat, arm_expr)| try_match(pat, scrutinee).map(|b| (pat, arm_expr, b)))
+        .unwrap_or_else(|| {
+            panic!(
+                "Match failure: `{}` matches no arm",
+                pretty_print_expr(scrutinee)
+            )
+        });
+
+    let mut result = arm_expr.clone();
+    for (name, value) in &bindings {
+        result = substitute(&result, name, value);
+    }
+    let message = format!(
+        "Substituted {} = {}",
+        pretty_print_pattern(pat),
+        pretty_print_expr(scrutinee)
+    );
+    Some((result, message))
 }
 
 fn step_binop(
