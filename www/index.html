@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Reduction Stepper</title>
+  <style>
+    .highlight-yellow {
+      background-color: #fff59d;
+    }
+    .highlight-green {
+      background-color: #a5d6a7;
+    }
+    .highlight-red {
+      background-color: #ef9a9a;
+    }
+  </style>
+</head>
+<body>
+  <h1>Reduction Stepper</h1>
+
+  <textarea id="formula-input" placeholder="Enter formula" rows="6" cols="60"></textarea>
+  <br>
+  <button id="formula-button">Enter formula</button>
+  <button id="step-button">Step</button>
+  <button id="run-button">Run to value</button>
+
+  <pre id="output"></pre>
+  <p id="message"></p>
+
+  <script type="module">
+    import init, { enter_formula, step_formula, current_render } from "./pkg/stepper_core.js";
+
+    // Must match the sentinel pairs in stepper-core/src/pretty.rs (one pair per
+    // HighlightColor). Regions can nest (e.g. yellow wrapping a redex that itself
+    // contains green-marked values), but a color's own start/end pair never repeats
+    // inside itself, so scanning for the nearest start marker and its first matching
+    // end marker, recursing into whatever text is between them, is enough.
+    const HIGHLIGHT_COLORS = [
+      { name: "yellow", start: "\uE000", end: "\uE001" },
+      { name: "green", start: "\uE002", end: "\uE003" },
+      { name: "red", start: "\uE004", end: "\uE005" },
+    ];
+
+    // Appends `text` to `container` as text nodes and nested <span> elements per any
+    // highlight markers found, recursing so nested regions become nested elements.
+    function appendRendered(container, text) {
+      let rest = text;
+      while (rest.length > 0) {
+        let next = null;
+        for (const color of HIGHLIGHT_COLORS) {
+          const idx = rest.indexOf(color.start);
+          if (idx !== -1 && (next === null || idx < next.idx)) {
+            next = { idx, color };
+          }
+        }
+        if (next === null) {
+          container.appendChild(document.createTextNode(rest));
+          return;
+        }
+
+        if (next.idx > 0) {
+          container.appendChild(document.createTextNode(rest.slice(0, next.idx)));
+        }
+        const afterStart = rest.slice(next.idx + 1);
+        const endIdx = afterStart.indexOf(next.color.end);
+
+        const span = document.createElement("span");
+        span.className = `highlight-${next.color.name}`;
+        appendRendered(span, afterStart.slice(0, endIdx));
+        container.appendChild(span);
+
+        rest = afterStart.slice(endIdx + 1);
+      }
+    }
+
+    function renderOutput(text) {
+      const output = document.getElementById("output");
+      output.textContent = "";
+      appendRendered(output, text);
+    }
+
+    const default_input = `
+val x = 15 * 10
+         val y = x + 15 * 1000
+         val z =
+             let
+                 val x = 10
+             in
+                 y < x
+             end
+    `
+
+    let runInterval = null;
+
+    function isRunning() {
+      return runInterval !== null;
+    }
+
+    function setRunning(running) {
+      document.getElementById("run-button").textContent = running ? "Stop" : "Run to value";
+      document.getElementById("step-button").disabled = running;
+      document.getElementById("formula-button").disabled = running;
+    }
+
+    function stopRun() {
+      if (runInterval !== null) {
+        clearInterval(runInterval);
+        runInterval = null;
+      }
+      setRunning(false);
+    }
+
+    // Runs one step and updates the display. Returns false (and stops any run in
+    // progress) if the step panicked or there was nothing left to do, so the
+    // interval driving "Run to value" knows to stop rather than hammering a wasm
+    // instance a panic may have left broken.
+    function doStep() {
+      let message;
+      try {
+        message = step_formula();
+      } catch (e) {
+        document.getElementById("message").textContent = `Error: ${e}`;
+        stopRun();
+        return false;
+      }
+      renderOutput(current_render());
+      document.getElementById("message").textContent = message;
+      if (message === "No more steps." || message === "Enter a formula first.") {
+        stopRun();
+        return false;
+      }
+      return true;
+    }
+
+    async function main() {
+      await init();
+      document.getElementById("formula-button").addEventListener("click", () => {
+        stopRun();
+        const formula = document.getElementById("formula-input").value || default_input;
+        renderOutput(enter_formula(formula));
+        document.getElementById("message").textContent = "";
+      });
+
+      document.getElementById("step-button").addEventListener("click", doStep);
+
+      document.getElementById("run-button").addEventListener("click", () => {
+        if (isRunning()) {
+          stopRun();
+          return;
+        }
+        setRunning(true);
+        runInterval = setInterval(doStep, 500);
+      });
+    }
+
+    main();
+  </script>
+</body>
+</html>
