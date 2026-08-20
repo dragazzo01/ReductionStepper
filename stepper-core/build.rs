@@ -3,7 +3,7 @@ use lrlex::CTLexerBuilder;
 use lrpar::RecoveryKind;
 
 fn main() {
-    CTLexerBuilder::new()
+    let build = CTLexerBuilder::new()
         .lrpar_config(|ctp| {
             // RecoveryKind::None: we only need a clean success/failure result, not
             // interactive error recovery. This also avoids lrpar's recovery-search
@@ -16,6 +16,11 @@ fn main() {
         })
         .lexer_in_src_dir("frontend/grammar.l")
         .unwrap()
-        .build()
-        .unwrap();
+        .build();
+
+    build.unwrap_or_else(|err| 
+    {
+        println!("{}", err.to_string());
+        todo!()
+    });
 }

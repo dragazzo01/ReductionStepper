@@ -53,6 +53,9 @@ fn render(program: &ast::Program) -> String {
 /// (or a parse-error message, leaving the stored program unset).
 #[wasm_bindgen]
 pub fn enter_formula(formula: &str) -> String {
+    // Recursive functions parked by the previous program are dead now, and keeping
+    // them would only push this program's `val rec` names into renames.
+    stepping::reset_rec_env();
     match parse_program(formula) {
         Ok(program) => {
             if let Some(e) = typecheck(&program) {
@@ -98,6 +101,3 @@ pub fn current_render() -> String {
         None => String::new(),
     })
 }
-
-#[cfg(test)]
-mod tests;

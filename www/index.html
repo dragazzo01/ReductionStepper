@@ -17,8 +17,30 @@
 </head>
 <body>
   <h1>Reduction Stepper</h1>
-
-  <textarea id="formula-input" placeholder="Enter formula" rows="6" cols="60"></textarea>
+  <p> This is my work in progress reduction stepper. In order to use it, simply enter a sequence of sml val 
+    declarations into the text box and hit enter formula. The expression which is about to be evaluated will be highlighted 
+    in yellow. In the event a substitution takes place, it will be highlighted green. 
+    <br>
+    A couple notes
+    <br>
+    1. you can only use the `val` keyword for declarations
+    <br>
+    2. lambda's must have their arguement type annotated (my typechecker is not smart enough to infer types maybe after I get to polymorism)
+    <br>
+    3. I support the following expressions: int constansts, bool constansts, +, -, ~, *, div, mod, comparisions, andalso, orelse, if...then...else, let...in...end, tuples, match expressions, lambdas, and function application
+    <br>
+    4. Pattern match should work for int constanst, bool constansts, tuples, wildcards, and identifiers. It should also work within lamdas (though the first arguement must still be type annotated)
+    <br>
+    As an example:
+    <br>
+      val (x, z) = (5+ 5, 5 - 4)
+      <br>
+      val y = let val x = 5 in x * z end
+      <br>
+      val z = x + y
+      <br>
+  </p>
+  <textarea id="formula-input" placeholder="Enter program" rows="6" cols="60"></textarea>
   <br>
   <button id="formula-button">Enter formula</button>
   <button id="step-button">Step</button>
@@ -80,14 +102,9 @@
     }
 
     const default_input = `
-val x = 15 * 10
-         val y = x + 15 * 1000
-         val z =
-             let
-                 val x = 10
-             in
-                 y < x
-             end
+    val (x, z) = (5+ 5, 5 - 4)
+    val y = let val x = 5 in x * z end
+    val z = x + y
     `
 
     let runInterval = null;
@@ -125,7 +142,7 @@ val x = 15 * 10
       }
       renderOutput(current_render());
       document.getElementById("message").textContent = message;
-      if (message === "No more steps." || message === "Enter a formula first.") {
+      if (message === "No more steps." || message === "Enter program") {
         stopRun();
         return false;
       }

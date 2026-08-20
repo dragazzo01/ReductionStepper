@@ -1,4 +1,4 @@
-use crate::ast::{Decl, Expr, HighlightColor, Pattern};
+use crate::ast::{Decl, Expr, HighlightColor, Pattern, PatternBase};
 use crate::pretty::{pretty_print_expr, pretty_print_pattern};
 
 /// Replace free occurrences of `name` in `expr` with `value`, marking every
@@ -85,7 +85,10 @@ pub fn substitute(expr: &Expr, name: &str, value: &Expr) -> Expr {
             Expr::Highlighted(Box::new(substitute(inner, name, value)), *color)
         }
         Expr::Tuple(items) => Expr::Tuple(
-            items.iter().map(|item| substitute(item, name, value)).collect(),
+            items
+                .iter()
+                .map(|item| substitute(item, name, value))
+                .collect(),
         ),
         Expr::Match(scrutinee, arms) => {
             // Each arm is its own independent scope (unlike `let`'s decls, which
@@ -105,6 +108,26 @@ pub fn substitute(expr: &Expr, name: &str, value: &Expr) -> Expr {
                 .collect();
             Expr::Match(Box::new(new_scrutinee), new_arms)
         }
+        Expr::Lambda(cases) => {
+            // Same shadowing rule as a `Match` arm: a parameter pattern that
+            // rebinds `name` shadows it for the whole body.
+            let new_cases = cases
+                .iter()
+                .map(|(pat, arm_expr)| {
+                    let new_expr = if pattern_binds(pat, name) {
+                        arm_expr.clone()
+                    } else {
+                        substitute(arm_expr, name, value)
+                    };
+                    (pat.clone(), new_expr)
+                })
+                .collect();
+            Expr::Lambda(new_cases)
+        }
+        Expr::App(f, arg) => Expr::App(
+            Box::new(substitute(f, name, value)),
+            Box::new(substitute(arg, name, value)),
+        ),
     }
 }
 
@@ -112,10 +135,10 @@ pub fn substitute(expr: &Expr, name: &str, value: &Expr) -> Expr {
 /// `Wildcard` never binds anything; used by `substitute_into_decls` to decide when
 /// a later decl shadows an in-flight substitution.
 fn pattern_binds(pat: &Pattern, name: &str) -> bool {
-    match pat {
-        Pattern::Ident(n) => n == name,
-        Pattern::Wildcard | Pattern::IntConst(_) | Pattern::BoolConst(_) => false,
-        Pattern::Tuple(pats) => pats.iter().any(|p| pattern_binds(p, name)),
+    match &pat.pat {
+        PatternBase::Ident(n) => n == name,
+        PatternBase::Wildcard | PatternBase::IntConst(_) | PatternBase::BoolConst(_) => false,
+        PatternBase::Tuple(pats) => pats.iter().any(|p| pattern_binds(p, name)),
     }
 }
 
@@ -135,19 +158,25 @@ fn pattern_binds(pat: &Pattern, name: &str) -> bool {
 /// treats it as fatal (there's only ever one pattern to satisfy), while
 /// `stepping::eval::step_match` uses `None` here to move on and try the next arm.
 pub(super) fn try_match(pat: &Pattern, value: &Expr) -> Option<Vec<(String, Expr)>> {
-    match pat {
-        Pattern::Wildcard => Some(Vec::new()),
-        Pattern::Ident(name) => Some(vec![(name.clone(), value.clone())]),
-        Pattern::IntConst(n) => {
-            let Expr::IntConst(v) = value else { unreachable!("typechecked: IntConst pattern only meets an int") };
+    match &pat.pat {
+        PatternBase::Wildcard => Some(Vec::new()),
+        PatternBase::Ident(name) => Some(vec![(name.clone(), value.clone())]),
+        PatternBase::IntConst(n) => {
+            let Expr::IntConst(v) = value else {
+                unreachable!("typechecked: IntConst pattern only meets an int")
+            };
             (v == n).then(Vec::new)
         }
-        Pattern::BoolConst(b) => {
-            let Expr::BoolConst(v) = value else { unreachable!("typechecked: BoolConst pattern only meets a bool") };
+        PatternBase::BoolConst(b) => {
+            let Expr::BoolConst(v) = value else {
+                unreachable!("typechecked: BoolConst pattern only meets a bool")
+            };
             (v == b).then(Vec::new)
         }
-        Pattern::Tuple(pats) => {
-            let Expr::Tuple(values) = value else { unreachable!("typechecked: Tuple pattern only meets a same-arity tuple") };
+        PatternBase::Tuple(pats) => {
+            let Expr::Tuple(values) = value else {
+                unreachable!("typechecked: Tuple pattern only meets a same-arity tuple")
+            };
             let mut bindings = Vec::new();
             for (p, v) in pats.iter().zip(values) {
                 bindings.extend(try_match(p, v)?);
@@ -179,18 +208,25 @@ pub(super) fn destructure(pat: &Pattern, value: &Expr) -> Vec<(String, Expr)> {
 /// the program") know whether to substitute into it too.
 pub(super) fn substitute_into_decls(decls: &[Decl], name: &str, value: &Expr) -> (Vec<Decl>, bool) {
     let mut result = Vec::with_capacity(decls.len());
-    let mut shadowed = false;
+    let mut shadowed: bool = false;
     for d in decls {
         if shadowed {
             result.push(d.clone());
             continue;
         }
-        result.push(Decl {
-            pat: d.pat.clone(),
-            ty: d.ty.clone(),
-            expr: substitute(&d.expr, name, value),
-        });
-        if pattern_binds(&d.pat, name) {
+        let expr = &d.get_val_decl().expr;
+        let pat = &d.get_val_decl().pat;
+        // A `val rec` decl's right-hand side is inside the scope of its own
+        // binding (that's what `rec` means), so — unlike the plain `val` above,
+        // whose right-hand side still sees the *outer* `name` — a `val rec` that
+        // rebinds `name` shadows it for its own expression too.
+        if pattern_binds(pat, name) && matches!(d, Decl::ValRecDecl(_)) {
+            result.push(d.clone());
+            shadowed = true;
+            continue;
+        }
+        result.push(d.new_expr(substitute(expr, name, value)));
+        if pattern_binds(pat, name) {
             shadowed = true;
         }
     }
