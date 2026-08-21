@@ -253,3 +253,31 @@ fn prints_every_pattern_form_in_a_case() {
         "val (a, _) : int * bool = (1, true)"
     );
 }
+
+#[test]
+fn prints_a_fun_as_the_val_it_elaborates_to() {
+    // `fun` is gone by the time there's an AST to print (see
+    // `frontend::elaborate`), so what comes back is the `val`/`val rec` it stands
+    // for — which is the point in a stepper: the desugaring is on screen.
+    prints_as("fun f (x : int) = x + 1", "val f = fn x : int => x + 1");
+    prints_as(
+        "fun fact (n : int) : int = if n = 0 then 1 else n * fact (n - 1)",
+        "val rec fact : int -> int = fn n : int => if n = 0 then 1 else n * fact (n - 1)",
+    );
+    prints_as(
+        "fun add (x : int) (y : int) : int = x + y",
+        "val add : int -> int -> int = fn x : int => fn y : int => x + y",
+    );
+    prints_as(
+        "fun g (0 : int) (y : int) = y | g (x : int) (y : int) = x * y",
+        "val g = fn argA : int => fn argB : int \
+         => case (argA, argB) of (0 : int, y : int) => y | (x : int, y : int) => x * y",
+    );
+}
+
+#[test]
+fn prints_a_parenthesized_annotated_pattern_without_its_parens() {
+    // `(x : int)` and `x : int` are the same pattern; only `fun` parameters need
+    // the parens, and nothing printed here is one.
+    prints_as("val (x : int) = 5", "val x : int = 5");
+}

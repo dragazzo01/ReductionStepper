@@ -723,3 +723,175 @@ fn let_is_an_atomic_expression() {
     assert!(parse_program("val z = f case x of _ => 1").is_err());
     assert!(parse_program("val z = f fn x : int => x").is_err());
 }
+
+// ---------------------------------------------------------------------------
+// `fun` declarations
+// ---------------------------------------------------------------------------
+
+/// Asserts that `fun_src` parses to exactly the program `val_src` does. That's what
+/// "`fun` is a derived form" means here: it's elaborated away during parsing, so
+/// there's no `fun` left in the AST to compare against — only the `val`/`val rec`
+/// it stands for.
+fn elaborates_to(fun_src: &str, val_src: &str) {
+    assert_eq!(parse(fun_src), parse(val_src), "elaborating `{fun_src}`");
+}
+
+/// Asserts `src` doesn't parse, with `message` as the reported error. Elaboration
+/// runs inside the parse (see `frontend::parse_program`), so a malformed `fun`
+/// binding fails there rather than in the typechecker.
+fn rejects(src: &str, message: &str) {
+    assert_eq!(
+        parse_program(src).err(),
+        Some(message.to_string()),
+        "parsing `{src}`"
+    );
+}
+
+#[test]
+fn a_fun_elaborates_to_a_val_bound_lambda() {
+    elaborates_to("fun f (x : int) = x + 1", "val f = fn x : int => x + 1");
+}
+
+#[test]
+fn a_fun_that_calls_itself_elaborates_to_a_val_rec() {
+    // The name occurring in the body is what makes it a `val rec` — and a `val rec`
+    // needs a complete type, which is where the result annotation goes.
+    elaborates_to(
+        "fun fact (n : int) : int = if n = 0 then 1 else n * fact (n - 1)",
+        "val rec fact : int -> int = fn n : int => if n = 0 then 1 else n * fact (n - 1)",
+    );
+}
+
+#[test]
+fn a_result_annotation_gives_a_non_recursive_fun_its_full_type() {
+    // Not recursive, so the annotation isn't required — but when it's there it
+    // still says what the whole function's type is.
+    elaborates_to(
+        "fun f (x : int) : bool = true",
+        "val f : int -> bool = fn x : int => true",
+    );
+    elaborates_to("fun f (x : int) = true", "val f = fn x : int => true");
+}
+
+#[test]
+fn several_clauses_become_the_lambdas_cases() {
+    // One argument, several clauses: a `fn` already dispatches on a list of
+    // patterns, so the clauses map straight onto its cases. The argument type comes
+    // from the first clause, which is also the only case a `fn` reads it from —
+    // hence `(0 : int)`, since that clause's parameter is a literal.
+    elaborates_to(
+        "fun fib (0 : int) = 0 | fib 1 = 1 | fib (n : int) : int = fib (n - 1) + fib (n - 2)",
+        "val rec fib : int -> int = fn 0 : int => 0 | 1 => 1 | n : int => fib (n - 1) + fib (n - 2)",
+    );
+}
+
+#[test]
+fn a_curried_fun_elaborates_to_nested_lambdas() {
+    elaborates_to(
+        "fun add (x : int) (y : int) = x + y",
+        "val add = fn x : int => fn y : int => x + y",
+    );
+    elaborates_to(
+        "fun add (x : int) (y : int) : int = x + y",
+        "val add : int -> int -> int = fn x : int => fn y : int => x + y",
+    );
+}
+
+#[test]
+fn several_clauses_and_arguments_elaborate_to_a_case_on_a_tuple() {
+    // The general derived form from the Definition: clause selection depends on
+    // every argument at once, so there's no single pattern position to dispatch on
+    // and the arguments have to be gathered into a tuple first.
+    elaborates_to(
+        "fun g (0 : int) (y : int) = y | g (x : int) (y : int) = x * y",
+        "val g = fn argA : int => fn argB : int \
+         => case (argA, argB) of (0 : int, y : int) => y | (x : int, y : int) => x * y",
+    );
+}
+
+#[test]
+fn generated_argument_names_dodge_the_ones_the_clauses_use() {
+    // `argA` is free in a clause body, so binding it would capture that use.
+    elaborates_to(
+        "fun k (0 : int) (y : int) = argA | k (x : int) (y : int) = x",
+        "val k = fn argAX : int => fn argB : int \
+         => case (argAX, argB) of (0 : int, y : int) => argA | (x : int, y : int) => x",
+    );
+}
+
+#[test]
+fn fun_parameters_are_atomic_patterns() {
+    // Exactly the `AtomicPattern` forms, for the same reason an application
+    // argument is exactly an `AtomicExpr`: they're the self-delimiting ones.
+    for src in [
+        "fun f 0 = 1",
+        "fun f _ = 1",
+        "fun f ~5 = 1",
+        "fun f true = 1",
+        "fun f (x : int) = 1",
+        "fun f (x, y) = 1",
+        "fun f (x : int) (y : int) _ = 1",
+    ] {
+        assert!(parse_program(src).is_ok(), "should parse: `{src}`");
+    }
+}
+
+#[test]
+fn an_annotation_after_the_parameters_is_the_result_type() {
+    // `fun f x : int = ...` annotates the *result*, not `x` — annotating a
+    // parameter takes parens, as it does in SML. Here that leaves the parameter
+    // type unknown, so there's no complete function type to record.
+    elaborates_to("fun f x : int = x", "val f = fn x => x");
+    elaborates_to("fun f (x : int) : int = x", "val f : int -> int = fn x : int => x");
+}
+
+#[test]
+fn a_parenthesized_pattern_may_carry_an_annotation() {
+    // What `AtomicPattern -> '(' Pattern ')'` buys outside of `fun`, where it's
+    // the only way to annotate a parameter.
+    assert_eq!(pattern_of("val (x : int) = 5"), pvar_typed("x", Type::Int));
+}
+
+#[test]
+fn every_clause_must_define_the_same_function_the_same_way() {
+    rejects(
+        "fun f (x : int) = x | g (y : int) = y",
+        "Every clause of a `fun` declaration must define the same function, but `f` has a clause for `g`",
+    );
+    rejects(
+        "fun f (x : int) (y : int) = x | f (z : int) = z",
+        "Every clause of `f` must take the same number of arguments, but one takes 2 and another takes 1",
+    );
+    rejects(
+        "fun f (x : int) : int = x | f (y : int) : bool = y",
+        "Clauses of `f` disagree about its result type: Int and Bool",
+    );
+}
+
+#[test]
+fn a_recursive_fun_without_a_complete_type_is_rejected() {
+    rejects(
+        "fun loop (n : int) = loop n",
+        "`loop` is recursive, so it becomes a `val rec`, which needs a complete type: \
+         annotate every argument and the result, as in `fun loop (x : int) : int = ...`",
+    );
+    // The general derived form needs its argument types for the same reason: they
+    // go on the generated arguments. They come from the first clause, whose
+    // literal parameter can say `(0 : int)` like any other pattern.
+    rejects(
+        "fun g 0 (y : int) = y | g (x : int) (y : int) = x",
+        "`g` has several clauses and several arguments, so it needs each argument of its \
+         first clause annotated: `fun g (x : int) (y : int) = ...`",
+    );
+}
+
+#[test]
+fn a_fun_clause_body_ending_in_a_case_absorbs_the_next_bar() {
+    // `|` separates `fun` clauses and `case` arms alike, and the innermost open
+    // construct wins — the same resolution real SML gives, and the same one
+    // `nested_case_dangling_bar_attaches_to_the_innermost_case` shows for `case`.
+    // So `f (n : int) = n` is read as a fourth *arm* here, and `= n` doesn't parse.
+    assert!(parse_program("fun f 0 = case 1 of _ => 1 | f (n : int) : int = n").is_err());
+    // Parens close the `case`, and the clause after it parses.
+    assert!(parse_program("fun f 0 = (case 1 of _ => 1) | f (n : int) : int = n").is_ok());
+}

@@ -437,3 +437,46 @@ fn a_function_passed_as_an_argument_is_applied_when_it_lands() {
         "val y = 9"
     );
 }
+
+#[test]
+fn a_fun_declared_function_steps_like_the_lambda_it_is() {
+    let program = parse("fun double (n : int) = n * 2\nval y = double 4");
+
+    // Nothing about the first step is `fun`-specific: it's a `val` bound to a
+    // lambda, so it's already a value and gets substituted whole.
+    let (program, msg) = step_once(&program);
+    assert_eq!(msg, "Substituted double = fn n : int => n * 2");
+    assert_eq!(show(&program), "val y = [g(fn n : int => n * 2)g] 4");
+
+    assert_eq!(run_to_value(program), "val y = 8");
+}
+
+#[test]
+fn a_multi_clause_fun_picks_the_first_clause_that_matches() {
+    let src = "fun f (0 : int) = 100 | f n = n * 2\n";
+    assert_eq!(run(&format!("{src}val y = f 0")), "val y = 100");
+    assert_eq!(run(&format!("{src}val y = f 3")), "val y = 6");
+}
+
+#[test]
+fn several_clauses_and_arguments_dispatch_on_the_tuple_of_them() {
+    // The generated arguments are collected into a tuple, which is then matched
+    // against one arm per clause — so both arguments are reduced before any
+    // clause is chosen.
+    let src = "fun g 0 (y : int) = y | g (x : int) (y : int) = x * y\n";
+    assert_eq!(run(&format!("{src}val a = g (1 - 1) 7")), "val a = 7");
+    assert_eq!(run(&format!("{src}val a = g 3 7")), "val a = 21");
+    // Partially applied, exactly like any other curried function.
+    assert_eq!(
+        run(&format!("{src}val p : int -> int = g 3\nval a = p 7")),
+        "val a = 21"
+    );
+}
+
+#[test]
+fn a_fun_that_takes_a_tuple_apart_binds_its_components() {
+    assert_eq!(
+        run("fun add (x : int, y : int) = x + y\nval s = add (1, 2)"),
+        "val s = 3"
+    );
+}

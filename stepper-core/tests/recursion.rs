@@ -179,3 +179,45 @@ fn re_running_the_same_program_does_not_accumulate_renames() {
     assert_eq!(show(&program), "val a = [ggAg] 1");
     assert_eq!(run_to_value(program), "val a = 2");
 }
+
+#[test]
+fn a_fun_that_calls_itself_is_a_recursive_binding() {
+    // `fun` elaborates to the same `val rec` (see `frontend::elaborate`), so it
+    // gets the same parked-lambda treatment — the message names the function, not
+    // the `fun` it was written as.
+    stepping::reset_rec_env();
+    let program = parse("fun fact (n : int) : int = if n = 0 then 1 else n * fact (n - 1)\nval x = fact 3");
+
+    let (program, msg) = step_once(&program);
+    assert_eq!(
+        msg,
+        "Bound recursive fact = fn n : int => if n = 0 then 1 else n * fact (n - 1)"
+    );
+    assert_eq!(show(&program), "val x = [gfactg] 3");
+    assert_eq!(run_to_value(program), "val x = 6");
+}
+
+#[test]
+fn a_recursive_fun_may_dispatch_on_its_clauses() {
+    assert_eq!(
+        run_rec("fun fib 0 = 0 | fib 1 = 1 | fib (n : int) : int = fib (n - 1) + fib (n - 2)\nval x = fib 6"),
+        "val x = 8"
+    );
+    // Several clauses *and* several arguments: the recursive call goes through the
+    // generated arguments' `case`.
+    assert_eq!(
+        run_rec(
+            "fun count 0 (acc : int) : int = acc | count (n : int) (acc : int) = count (n - 1) (acc + n)\
+             \nval x = count 3 0"
+        ),
+        "val x = 6"
+    );
+}
+
+#[test]
+fn a_fun_declared_inside_a_let_is_recursive_too() {
+    assert_eq!(
+        run_rec("val y = let fun countdown (n : int) : int = if n <= 0 then 0 else countdown (n - 1) in countdown 2 end"),
+        "val y = 0"
+    );
+}

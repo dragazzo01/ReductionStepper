@@ -23,7 +23,7 @@
     <br>
     A couple notes
     <br>
-    1. you can only use the `val`/`val rec` keyword for declarations
+    1. you can only use the `val`/`val rec`/`fun` keyword for declarations
     <br>
     2. lambda's and must have their arguement type annotated and `val rec` must have the entire type annotated (my typechecker is not smart enough to infer types yet)
     <br>
@@ -32,13 +32,18 @@
     4. Pattern match should work for int constanst, bool constansts, tuples, wildcards, and identifiers. It should also work within lamdas (though the first arguement must still be type annotated)
     <br>
     5. For recursive lambda's I will sometimes rename the underlying symbol to make sure it is unique after the `val rec` is consumed.
+    <br>
+    6. the `fun` keyword will be elaborated into val/val rec as required. It also requires it's first clauses types annotated (and the return type if it is a recursive function)
+    <br>
     As an example:
     <br>
+    
       val (x, z) = (5+ 5, 5 - 4)
       <br>
       val y = let val x = 5 in x * z end
       <br>
       val z = x + y
+      <br>
       <br>
       val rec fact : int -> int = fn 0 : int => 1 | x => x * fact (x - 1)
       <br>
@@ -48,7 +53,20 @@ val b = fact 2
 <br>
 val x = let val rec fact : int -> int = fn 0 : int => 0 | x => 1 + fact (x - 1) in fact 3 end
 <br>
-  </p>
+<br>
+fun fib (0 : int) : int = 1
+<br>
+  | fib 1 = 1
+  <br>
+  | fib n = fib (n - 1) + fib (n - 2)
+<br>
+  val _ = fib 3
+<br>
+  fun curriedAdd (x : int) (y : int) = x + y
+<br>
+  val _ = curriedAdd 1 2
+<br>  
+</p>
   <textarea id="formula-input" placeholder="Enter program" rows="6" cols="60"></textarea>
   <br>
   <button id="formula-button">Enter formula</button>

@@ -224,6 +224,20 @@ fn a_lambda_needs_an_annotation_on_its_first_parameter() {
 }
 
 #[test]
+fn a_lambda_parameter_may_be_annotated_component_by_component() {
+    // Annotating every component of a tuple pattern says the same thing as
+    // annotating the whole pattern, so it satisfies the "first parameter must
+    // declare its type" rule too.
+    accepts("val f = fn (x : int, y : int) => x + y");
+    accepts("val f : int * bool -> int = fn (x : int, b : bool) => x");
+    // One component short of a complete type is still no type.
+    rejects(
+        "val f = fn (x : int, y) => x",
+        "(x : int, y) must have an explict param type for functions on first pattern",
+    );
+}
+
+#[test]
 fn every_lambda_arm_must_return_the_same_type() {
     accepts("val f = fn n : int => n | 0 => 1");
     rejects(
@@ -305,5 +319,57 @@ fn val_rec_checks_its_body_against_the_declared_type() {
     rejects(
         "val rec f : int -> bool = fn n : int => n",
         "Expected Arrow(Int, Bool) but got type Arrow(Int, Int)",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `fun` declarations
+// ---------------------------------------------------------------------------
+//
+// A `fun` is a `val`/`val rec` by the time the typechecker sees it (see
+// `frontend::elaborate`), so these are really about the types elaboration hands
+// it — and about the errors that only make sense in terms of what the user wrote.
+
+#[test]
+fn checks_a_fun_like_the_val_it_elaborates_to() {
+    accepts("fun f (x : int) = x + 1\nval y = f 2");
+    accepts("fun f (x : int) : bool = x < 1\nval b = f 2");
+    rejects(
+        "fun f (x : int) : bool = x + 1",
+        "Expected Arrow(Int, Bool) but got type Arrow(Int, Int)",
+    );
+    rejects(
+        "fun f (x : int) = x + 1\nval y = f true",
+        "Expected Int but got type Bool",
+    );
+}
+
+#[test]
+fn every_clause_of_a_fun_is_checked_against_the_first_clauses_types() {
+    accepts("fun fib (0 : int) = 0 | fib 1 = 1 | fib (n : int) : int = fib (n - 1) + fib (n - 2)");
+    // A later clause annotating a parameter differently contradicts the type the
+    // function already has.
+    rejects("fun f (x : int) = 0 | f (b : bool) = 1", "Expected Int got Bool");
+    // Every clause has to return the same type, exactly as every `fn` arm does.
+    rejects("fun f (x : int) = 0 | f 1 = true", "Expected Int but got type Bool");
+}
+
+#[test]
+fn a_fun_may_take_a_tuple_apart_in_its_parameter() {
+    // Annotating the components is annotating the parameter, so a tuple-taking
+    // `fun` needs nothing further — the same rule
+    // `a_lambda_parameter_may_be_annotated_component_by_component` shows for `fn`.
+    accepts("fun add (x : int, y : int) = x + y\nval s = add (1, 2)");
+    accepts(
+        "fun sum (0 : int, acc : int) : int = acc | sum (n : int, acc : int) = sum (n - 1, acc + n)",
+    );
+}
+
+#[test]
+fn a_curried_fun_is_a_function_returning_a_function() {
+    accepts("fun add (x : int) (y : int) = x + y\nval inc : int -> int = add 1");
+    rejects(
+        "fun add (x : int) (y : int) : int = x + y\nval n : int = add 1",
+        "Expected Int but got type Arrow(Int, Int)",
     );
 }

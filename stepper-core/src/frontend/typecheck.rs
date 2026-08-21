@@ -98,7 +98,7 @@ fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
             // exactly like binding a `val` decl's pattern against its declared type.
             
             let (first_pat, first_expr) = &cases[0];
-            let Some(param_ty) = &first_pat.typ else {
+            let Some(param_ty) = &first_pat.declared_type() else {
                 return Err(format!("{} must have an explict param type for functions on first pattern", 
                                     pretty_print_pattern(first_pat)
                         ));

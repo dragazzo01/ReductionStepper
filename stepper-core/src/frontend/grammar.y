@@ -1,4 +1,5 @@
 %start Program
+%parse-param errors: &::std::cell::RefCell<::std::vec::Vec<String>>
 %nonassoc 'ELSE'
 %right 'ARROW'
 %nonassoc 'OF' '=>'
@@ -29,35 +30,90 @@ Decl -> Decl:
           expr: $5
         })
     }
+    | 'FUN' FunClauses { fun_decl($2, errors) }
+    ;
+
+/// The clauses of one `fun` declaration, elaborated into a `val`/`val rec` on the
+/// spot (see `elaborate`) so that `Decl` — and therefore everything downstream of
+/// this file — never has to know `fun` exists. `'|'` separates clauses here just as
+/// it separates `MatchArms`, and the same lowest-precedence-shifts-first
+/// resolution applies: a trailing `| ...` attaches to an innermost open `case`/`fn`
+/// in a clause's body rather than starting a new clause, which is why (exactly as
+/// in real SML) such a body needs parens if more clauses are to follow it.
+FunClauses -> Vec<FunClause>:
+      FunClause { vec![$1] }
+    | FunClauses '|' FunClause { let mut v = $1; v.push($3); v }
+    ;
+
+/// `f p1 p2 ... = e`, with an optional result type before the `=`. The result type
+/// is what a recursive `fun` needs to become a `val rec`, since that requires a
+/// complete annotation and there's no unification engine to recover one.
+FunClause -> FunClause:
+      'ID' FunParams '=' Expr
+      {
+          FunClause {
+              name: $lexer.span_str($1.unwrap_or_else(|e| e).span()).to_string(),
+              params: $2,
+              result_ty: None,
+              body: $4,
+          }
+      }
+    | 'ID' FunParams ':' Type '=' Expr
+      {
+          FunClause {
+              name: $lexer.span_str($1.unwrap_or_else(|e| e).span()).to_string(),
+              params: $2,
+              result_ty: Some($4),
+              body: $6,
+          }
+      }
+    ;
+
+/// A clause's parameters: juxtaposed `AtomicPattern`s, the pattern-level twin of
+/// `AppExpr`'s juxtaposed `AtomicExpr`s and unambiguous for the same reason —
+/// FIRST(AtomicPattern) is disjoint from what can follow the list (`:` and `=`), so
+/// the parser shifts another parameter whenever one is available. Note that this
+/// takes `AtomicPattern`, not `Pattern`: an annotated parameter must be written
+/// with parens, `fun f (x : int) = ...`, or the `: int` would be read as the
+/// *result* type — which is SML's convention anyway.
+FunParams -> Vec<Pattern>:
+      AtomicPattern { vec![$1] }
+    | FunParams AtomicPattern { let mut v = $1; v.push($2); v }
     ;
 
 Pattern -> Pattern:
-      PatternBase {Pattern {pat: $1, typ: None}}
-    | PatternBase ':' Type {Pattern {pat: $1, typ: Some($3)}}
+      AtomicPattern { $1 }
+    | AtomicPattern ':' Type { Pattern { pat: $1.pat, typ: Some($3) } }
     ;
 
-PatternBase -> PatternBase:
+/// SML's `atpat`: the self-delimiting pattern forms, and so exactly the ones usable
+/// as a `fun` parameter without parens (compare `AtomicExpr`). `'(' Pattern ')'`
+/// rather than an unannotated inner pattern, so that `(x : int)` — the only way to
+/// annotate a parameter — parses.
+AtomicPattern -> Pattern:
       'ID'
       {
-          PatternBase::Ident($lexer.span_str($1.unwrap_or_else(|e| e).span()).to_string())
+          Pattern::untyped(PatternBase::Ident(
+              $lexer.span_str($1.unwrap_or_else(|e| e).span()).to_string()
+          ))
       }
-    | 'WILDCARD' { PatternBase::Wildcard }
+    | 'WILDCARD' { Pattern::untyped(PatternBase::Wildcard) }
     | 'INT'
       {
-          PatternBase::IntConst(
+          Pattern::untyped(PatternBase::IntConst(
               $lexer.span_str($1.unwrap_or_else(|e| e).span()).parse().unwrap_or(0)
-          )
+          ))
       }
     | '~' 'INT'
       {
-          PatternBase::IntConst(
+          Pattern::untyped(PatternBase::IntConst(
               -$lexer.span_str($2.unwrap_or_else(|e| e).span()).parse::<i64>().unwrap_or(0)
-          )
+          ))
       }
-    | 'TRUE' { PatternBase::BoolConst(true) }
-    | 'FALSE' { PatternBase::BoolConst(false) }
-    | '(' PatternBase ')' { $2 }
-    | '(' PatternTuple ')' { PatternBase::Tuple($2) }
+    | 'TRUE' { Pattern::untyped(PatternBase::BoolConst(true)) }
+    | 'FALSE' { Pattern::untyped(PatternBase::BoolConst(false)) }
+    | '(' Pattern ')' { $2 }
+    | '(' PatternTuple ')' { Pattern::untyped(PatternBase::Tuple($2)) }
     ;
 
 PatternTuple -> Vec<Pattern>:
@@ -170,3 +226,4 @@ MatchArms -> Vec<(Pattern, Expr)>:
     ;
 %%
 use super::ast::{Decl, ValDecl, Expr, Pattern, PatternBase, Type};
+use super::elaborate::{fun_decl, FunClause};

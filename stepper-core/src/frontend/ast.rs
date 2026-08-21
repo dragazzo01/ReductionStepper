@@ -48,6 +48,39 @@ pub struct Pattern {
     pub typ: Option<Type>,
 }
 
+impl Pattern {
+    /// A pattern carrying no `: type` annotation — every pattern form except the
+    /// one grammar production that attaches one.
+    pub fn untyped(pat: PatternBase) -> Self {
+        Pattern { pat, typ: None }
+    }
+
+    /// The type this pattern states outright, if it states one — either as its own
+    /// `: type` annotation or, for a tuple whose every component states one, as the
+    /// product of those. Nothing else is derivable: an unannotated variable or a
+    /// wildcard could stand for anything, and a literal's type (`0 : int`) is only
+    /// *checked*, never a declaration, since a `fn`'s parameter type must come from
+    /// something the programmer wrote rather than from a pattern that happens to be
+    /// a literal.
+    ///
+    /// This is what lets `fn (x : int, y : bool) => ...` and its `fun` spelling be
+    /// accepted without repeating the type: annotating the components says the same
+    /// thing as annotating the whole.
+    pub fn declared_type(&self) -> Option<Type> {
+        if let Some(typ) = &self.typ {
+            return Some(typ.clone());
+        }
+        match &self.pat {
+            PatternBase::Tuple(pats) => pats
+                .iter()
+                .map(|p| p.declared_type().map(Box::new))
+                .collect::<Option<Vec<_>>>()
+                .map(Type::Product),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatternBase {
     Ident(String),
