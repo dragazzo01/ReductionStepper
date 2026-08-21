@@ -23,14 +23,15 @@
     <br>
     A couple notes
     <br>
-    1. you can only use the `val` keyword for declarations
+    1. you can only use the `val`/`val rec` keyword for declarations
     <br>
-    2. lambda's must have their arguement type annotated (my typechecker is not smart enough to infer types maybe after I get to polymorism)
+    2. lambda's and must have their arguement type annotated and `val rec` must have the entire type annotated (my typechecker is not smart enough to infer types yet)
     <br>
     3. I support the following expressions: int constansts, bool constansts, +, -, ~, *, div, mod, comparisions, andalso, orelse, if...then...else, let...in...end, tuples, match expressions, lambdas, and function application
     <br>
     4. Pattern match should work for int constanst, bool constansts, tuples, wildcards, and identifiers. It should also work within lamdas (though the first arguement must still be type annotated)
     <br>
+    5. For recursive lambda's I will sometimes rename the underlying symbol to make sure it is unique after the `val rec` is consumed.
     As an example:
     <br>
       val (x, z) = (5+ 5, 5 - 4)
@@ -39,6 +40,14 @@
       <br>
       val z = x + y
       <br>
+      val rec fact : int -> int = fn 0 : int => 1 | x => x * fact (x - 1)
+      <br>
+  val a = fact 1
+  <br>
+val b = fact 2
+<br>
+val x = let val rec fact : int -> int = fn 0 : int => 0 | x => 1 + fact (x - 1) in fact 3 end
+<br>
   </p>
   <textarea id="formula-input" placeholder="Enter program" rows="6" cols="60"></textarea>
   <br>
