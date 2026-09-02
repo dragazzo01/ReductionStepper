@@ -3,7 +3,7 @@ use crate::pretty::{pretty_print_expr, pretty_print_pattern};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use super::subst::{destructure, refresh_binders, substitute, substitute_into_decls, try_match};
+use super::subst::{destructure, fresh_copy, substitute, substitute_into_decls, try_match};
 
 #[derive(Debug, PartialEq)]
 pub struct StepOutcome {
@@ -177,10 +177,11 @@ fn step_expr(expr: &Expr) -> Option<Step> {
 /// concerned — collapse it once and every later unrolling comes up folded.
 fn step_var(binder: &Binder) -> Option<Step> {
     // Every unrolling is a fresh copy that will be stepped alongside the ones
-    // before it, so its bound variables have to be its own — otherwise a
-    // continuation built by one unrolling captures the next one's parameter. See
-    // `subst::refresh_binders`.
-    let lambda = refresh_binders(&lookup_rec(binder.id)?);
+    // before it, so its nodes and bound variables have to be its own — otherwise
+    // a continuation built by one unrolling captures the next one's parameter,
+    // and highlighting one unrolling's redex marks them all. See
+    // `subst::fresh_copy`.
+    let lambda = fresh_copy(&lookup_rec(binder.id)?);
     let message = format!(
         "Unrolled {} to {}",
         binder.name,
@@ -352,9 +353,9 @@ fn decl_bindings(decl: &Decl) -> (Vec<(BinderId, Expr)>, String) {
     }
 }
 
-/// Applies every binding a decl produced to `decls`. Each value's node id goes
-/// into `green`, which paints every copy this substitution placed — one id covers
-/// all of them, since a cloned subtree keeps its ids.
+/// Applies every binding a decl produced to `decls`, collecting into `green` the
+/// id of each copy the substitutions placed — one per placement, since every copy
+/// is its own node.
 fn apply_bindings_to_decls(
     decls: &[Decl],
     bindings: &[(BinderId, Expr)],
@@ -362,8 +363,7 @@ fn apply_bindings_to_decls(
 ) -> Vec<Decl> {
     let mut decls = decls.to_vec();
     for (binder, value) in bindings {
-        decls = substitute_into_decls(&decls, *binder, value);
-        green.push(value.id);
+        decls = substitute_into_decls(&decls, *binder, value, green);
     }
     decls
 }
@@ -394,7 +394,7 @@ fn step_let(whole: &Expr, decls: &[Decl], body: &Expr) -> Option<Step> {
     let rest_decls = apply_bindings_to_decls(&decls[1..], &bindings, &mut green);
     let mut new_body = body.clone();
     for (binder, value) in &bindings {
-        new_body = substitute(&new_body, *binder, value);
+        new_body = substitute(&new_body, *binder, value, &mut green);
     }
 
     let expr = if rest_decls.is_empty() {
@@ -438,8 +438,7 @@ fn step_match(whole: &Expr, scrutinee: &Expr, arms: &[(Pattern, Expr)]) -> Optio
     let mut result = arm_expr.clone();
     let mut green = Vec::new();
     for (binder, value) in &bindings {
-        result = substitute(&result, *binder, value);
-        green.push(value.id);
+        result = substitute(&result, *binder, value, &mut green);
     }
     let message = format!(
         "Substituted {} = {}",

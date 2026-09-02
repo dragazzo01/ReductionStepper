@@ -1,17 +1,20 @@
 use std::collections::HashMap;
 
-use crate::ast::{walk_expr, Binder, BinderId, Decl, Expr, ExprKind, Pattern, PatternBase};
+use crate::ast::{walk_expr, Binder, BinderId, Decl, Expr, ExprKind, NodeId, Pattern, PatternBase};
 use crate::pretty::{pretty_print_expr, pretty_print_pattern};
 
-/// A copy of `expr` in which every variable it *binds* has a fresh `BinderId`,
-/// with the uses inside rewritten to match. Free variables — including a
-/// recursive function's reference to itself, which is bound outside — are left
-/// alone, and so are node ids and names: this changes identity, not appearance.
+/// An independent copy of `expr`: every node gets a fresh [`NodeId`], and every
+/// variable it *binds* a fresh [`BinderId`], with the uses inside rewritten to
+/// match. Free variables — including a recursive function's reference to itself,
+/// which is bound outside — are left alone, as are names. Nothing about how the
+/// copy *reads* changes; only who it is.
 ///
-/// Every duplication of a subtree has to go through here, and the reason is
-/// capture. Cloning alone would give the copy the same binder ids as the
-/// original, and two live lambdas sharing a binder id are indistinguishable to
-/// `substitute`. In continuation-passing style that happens immediately:
+/// Every duplication of a subtree goes through here, and both halves matter.
+///
+/// **Fresh binders**, or substitution captures. Cloning alone would give the copy
+/// the original's binder ids, and two live lambdas sharing one are
+/// indistinguishable to `substitute`. Continuation-passing style hits this
+/// immediately:
 ///
 /// ```text
 /// fun factCPS (0 : int) (k : int -> int) : int = k 1
@@ -21,14 +24,26 @@ use crate::pretty::{pretty_print_expr, pretty_print_pattern};
 /// Each unrolling produces another `fn res => k (x * res)` with the *same* `res`,
 /// and `k` is then substituted with a previous one, nesting a `res` inside a `res`
 /// that is literally the same variable. Applying the outer one would reach into
-/// the inner one's body and `factCPS 3 (fn x => x)` would quietly come out as 3
+/// the inner one's body, and `factCPS 3 (fn x => x)` would quietly come out as 3
 /// instead of 6.
 ///
-/// Renaming on duplication maintains the invariant this relies on: within one
-/// live program, each binding site has an id nothing else shares. That's what
-/// lets the collection pass below simply gather every binder in the subtree
-/// without tracking scopes.
-pub(super) fn refresh_binders(expr: &Expr) -> Expr {
+/// **Fresh nodes**, or the display can't tell the copies apart. A `NodeId` is what
+/// the view layer points at, and `highlight_next` returns exactly one of them —
+/// so if two copies share ids, marking the redex in one paints the other too:
+///
+/// ```text
+/// val a = [y1 * 100y]
+/// val b = (fn n : int => [yn * 100y]) 7     <- not being evaluated
+/// ```
+///
+/// It also decides what folding a lambda means: distinct ids make it fold the one
+/// you clicked rather than every copy of it at once.
+///
+/// Together these maintain the invariant the rest of the crate assumes: within one
+/// live program, each node and each binding site has an id nothing else shares.
+/// That's also what lets the collection pass below gather binders without tracking
+/// scopes.
+pub(super) fn fresh_copy(expr: &Expr) -> Expr {
     let mut renaming = HashMap::new();
     walk_expr(expr, &mut |e| {
         let patterns: &[(Pattern, Expr)] = match &e.kind {
@@ -49,9 +64,6 @@ pub(super) fn refresh_binders(expr: &Expr) -> Expr {
             }
         }
     });
-    if renaming.is_empty() {
-        return expr.clone();
-    }
     renamed_expr(expr, &renaming)
 }
 
@@ -70,11 +82,7 @@ fn renamed_pattern(pat: &Pattern, renaming: &HashMap<BinderId, BinderId>) -> Pat
         }
         other => other.clone(),
     };
-    Pattern {
-        id: pat.id,
-        pat: base,
-        typ: pat.typ.clone(),
-    }
+    Pattern::new(base, pat.typ.clone())
 }
 
 fn renamed_cases(
@@ -104,7 +112,8 @@ fn renamed_expr(expr: &Expr, renaming: &HashMap<BinderId, BinderId>) -> Expr {
     let recur = |e: &Expr| Box::new(renamed_expr(e, renaming));
     let kind = match &expr.kind {
         ExprKind::Var(binder) => ExprKind::Var(renamed_binder(binder, renaming)),
-        ExprKind::IntConst(_) | ExprKind::BoolConst(_) => return expr.clone(),
+        ExprKind::IntConst(n) => ExprKind::IntConst(*n),
+        ExprKind::BoolConst(b) => ExprKind::BoolConst(*b),
         ExprKind::Add(l, r) => ExprKind::Add(recur(l), recur(r)),
         ExprKind::Sub(l, r) => ExprKind::Sub(recur(l), recur(r)),
         ExprKind::Mul(l, r) => ExprKind::Mul(recur(l), recur(r)),
@@ -132,7 +141,7 @@ fn renamed_expr(expr: &Expr, renaming: &HashMap<BinderId, BinderId>) -> Expr {
         }
         ExprKind::Lambda(cases) => ExprKind::Lambda(renamed_cases(cases, renaming)),
     };
-    expr.same_id(kind)
+    Expr::new(kind)
 }
 
 /// Replace every use of the variable `target` in `expr` with `value`.
@@ -146,54 +155,71 @@ fn renamed_expr(expr: &Expr, renaming: &HashMap<BinderId, BinderId>) -> Expr {
 /// function had to stop at every `let`, `fn` case, and `case` arm that rebound
 /// the name, and `substitute_into_decls` had to report back whether it had.
 ///
-/// The copies placed here keep `value`'s node ids rather than getting fresh ones
-/// (see `NodeId`), which is what lets the caller mark everything this
-/// substitution just placed green by naming a single id.
-pub(super) fn substitute(expr: &Expr, target: BinderId, value: &Expr) -> Expr {
-    let recur = |e: &Expr| Box::new(substitute(e, target, value));
+/// Each placement is an independent [`fresh_copy`], so `value`'s own ids appear
+/// nowhere in the result. That's why `placed` exists: it collects the root
+/// `NodeId` of every copy made, which is what the caller marks green. Nodes the
+/// substitution didn't touch keep the ids they had, so display state attached to
+/// them survives the step untouched.
+pub(super) fn substitute(
+    expr: &Expr,
+    target: BinderId,
+    value: &Expr,
+    placed: &mut Vec<NodeId>,
+) -> Expr {
+    // A macro rather than a closure: each arm needs `placed` mutably twice, and a
+    // closure capturing it can't be called twice inside one expression.
+    macro_rules! sub {
+        ($e:expr) => {
+            Box::new(substitute($e, target, value, placed))
+        };
+    }
     let kind = match &expr.kind {
         ExprKind::Var(binder) => {
             if binder.id == target {
-                // Each placement gets its own binders, so two copies of the same
-                // value can be stepped independently and neither can capture the
-                // other's variables. See `refresh_binders`.
-                return refresh_binders(value);
+                let copy = fresh_copy(value);
+                placed.push(copy.id);
+                return copy;
             }
             return expr.clone();
         }
         ExprKind::IntConst(_) | ExprKind::BoolConst(_) => return expr.clone(),
-        ExprKind::Add(l, r) => ExprKind::Add(recur(l), recur(r)),
-        ExprKind::Sub(l, r) => ExprKind::Sub(recur(l), recur(r)),
-        ExprKind::Mul(l, r) => ExprKind::Mul(recur(l), recur(r)),
-        ExprKind::Div(l, r) => ExprKind::Div(recur(l), recur(r)),
-        ExprKind::Mod(l, r) => ExprKind::Mod(recur(l), recur(r)),
-        ExprKind::Neg(inner) => ExprKind::Neg(recur(inner)),
-        ExprKind::Eq(l, r) => ExprKind::Eq(recur(l), recur(r)),
-        ExprKind::Ne(l, r) => ExprKind::Ne(recur(l), recur(r)),
-        ExprKind::Lt(l, r) => ExprKind::Lt(recur(l), recur(r)),
-        ExprKind::Le(l, r) => ExprKind::Le(recur(l), recur(r)),
-        ExprKind::Gt(l, r) => ExprKind::Gt(recur(l), recur(r)),
-        ExprKind::Ge(l, r) => ExprKind::Ge(recur(l), recur(r)),
-        ExprKind::AndAlso(l, r) => ExprKind::AndAlso(recur(l), recur(r)),
-        ExprKind::OrElse(l, r) => ExprKind::OrElse(recur(l), recur(r)),
-        ExprKind::App(f, arg) => ExprKind::App(recur(f), recur(arg)),
+        ExprKind::Add(l, r) => ExprKind::Add(sub!(l), sub!(r)),
+        ExprKind::Sub(l, r) => ExprKind::Sub(sub!(l), sub!(r)),
+        ExprKind::Mul(l, r) => ExprKind::Mul(sub!(l), sub!(r)),
+        ExprKind::Div(l, r) => ExprKind::Div(sub!(l), sub!(r)),
+        ExprKind::Mod(l, r) => ExprKind::Mod(sub!(l), sub!(r)),
+        ExprKind::Neg(inner) => ExprKind::Neg(sub!(inner)),
+        ExprKind::Eq(l, r) => ExprKind::Eq(sub!(l), sub!(r)),
+        ExprKind::Ne(l, r) => ExprKind::Ne(sub!(l), sub!(r)),
+        ExprKind::Lt(l, r) => ExprKind::Lt(sub!(l), sub!(r)),
+        ExprKind::Le(l, r) => ExprKind::Le(sub!(l), sub!(r)),
+        ExprKind::Gt(l, r) => ExprKind::Gt(sub!(l), sub!(r)),
+        ExprKind::Ge(l, r) => ExprKind::Ge(sub!(l), sub!(r)),
+        ExprKind::AndAlso(l, r) => ExprKind::AndAlso(sub!(l), sub!(r)),
+        ExprKind::OrElse(l, r) => ExprKind::OrElse(sub!(l), sub!(r)),
+        ExprKind::App(f, arg) => ExprKind::App(sub!(f), sub!(arg)),
         ExprKind::If(cond, then_branch, else_branch) => {
-            ExprKind::If(recur(cond), recur(then_branch), recur(else_branch))
+            ExprKind::If(sub!(cond), sub!(then_branch), sub!(else_branch))
         }
-        ExprKind::Let(decls, body) => {
-            ExprKind::Let(substitute_into_decls(decls, target, value), recur(body))
-        }
+        ExprKind::Let(decls, body) => ExprKind::Let(
+            substitute_into_decls(decls, target, value, placed),
+            sub!(body),
+        ),
         ExprKind::Tuple(items) => ExprKind::Tuple(
             items
                 .iter()
-                .map(|item| substitute(item, target, value))
+                .map(|item| substitute(item, target, value, placed))
                 .collect(),
         ),
         ExprKind::Match(scrutinee, arms) => {
-            ExprKind::Match(recur(scrutinee), substitute_into_cases(arms, target, value))
+            let scrutinee = sub!(scrutinee);
+            ExprKind::Match(
+                scrutinee,
+                substitute_into_cases(arms, target, value, placed),
+            )
         }
         ExprKind::Lambda(cases) => {
-            ExprKind::Lambda(substitute_into_cases(cases, target, value))
+            ExprKind::Lambda(substitute_into_cases(cases, target, value, placed))
         }
     };
     expr.same_id(kind)
@@ -206,10 +232,11 @@ fn substitute_into_cases(
     cases: &[(Pattern, Expr)],
     target: BinderId,
     value: &Expr,
+    placed: &mut Vec<NodeId>,
 ) -> Vec<(Pattern, Expr)> {
     cases
         .iter()
-        .map(|(pat, body)| (pat.clone(), substitute(body, target, value)))
+        .map(|(pat, body)| (pat.clone(), substitute(body, target, value, placed)))
         .collect()
 }
 
@@ -220,10 +247,15 @@ fn substitute_into_cases(
 /// body too. With binder ids there's nothing to stop for: `val x = 5  val x = 10
 /// val y = x + 1` gives `y`'s `x` the *second* decl's id, so substituting the
 /// first decl's binding walks right past it and correctly leaves it alone.
-pub(super) fn substitute_into_decls(decls: &[Decl], target: BinderId, value: &Expr) -> Vec<Decl> {
+pub(super) fn substitute_into_decls(
+    decls: &[Decl],
+    target: BinderId,
+    value: &Expr,
+    placed: &mut Vec<NodeId>,
+) -> Vec<Decl> {
     decls
         .iter()
-        .map(|d| d.new_expr(substitute(&d.get_val_decl().expr, target, value)))
+        .map(|d| d.new_expr(substitute(&d.get_val_decl().expr, target, value, placed)))
         .collect()
 }
 

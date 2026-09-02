@@ -27,8 +27,8 @@ use crate::ast::NodeId;
 pub enum Ann {
     /// This region is the rendering of one AST node. Backends use it to attach
     /// highlights, to make the region clickable, and to map a click back to a
-    /// node. Ids repeat when a subtree was copied (see `NodeId`), so a backend's
-    /// id-to-region map is one-to-many.
+    /// node. Ids are unique across a live program (see `NodeId`), so a region
+    /// names exactly one node and vice versa.
     Node(NodeId),
     /// A syntactic class for styling: `"kw"`, `"lit"`, `"var"`, `"op"`.
     Class(&'static str),

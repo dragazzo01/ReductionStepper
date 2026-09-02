@@ -24,16 +24,22 @@ thread_local! {
 
 /// Identifies one node of the tree, for the view layer's benefit.
 ///
-/// Ids are *not* refreshed when a subtree is cloned, which is deliberate: when
-/// `substitute` drops three copies of a value into three use sites, all three
-/// carry the source value's ids, so marking "what the last step just placed"
-/// green is one id lookup rather than a traversal. The same rule is what makes
-/// collapsing one copy of a lambda collapse its siblings — the id *is* the
-/// lambda, not the position. A step that rewrites a node in place reuses that
-/// node's id (see [`Expr::same_id`]), so view state survives reduction too.
+/// **Every live node has an id nothing else shares.** Two rules keep that true,
+/// and between them they decide what display state survives a reduction:
 ///
-/// The consequence to remember is that an id can name several live nodes at
-/// once, so a `NodeId -> Element` map is one-to-many.
+/// - A step that rewrites a node *in place* reuses its id (see
+///   [`Expr::same_id`]), and untouched subtrees are cloned as they are. So the
+///   `1 + 2` that becomes `3` is the same place on screen, and a lambda you
+///   folded stays folded across steps that don't involve it.
+/// - A step that *duplicates* a subtree gives the copy fresh ids
+///   (`stepping::subst::fresh_copy`). Substituting a lambda into two use sites
+///   makes two independent lambdas: folding one leaves the other alone, and
+///   highlighting a redex inside one doesn't mark the identical spot in the
+///   other.
+///
+/// The second rule is why `step` reports the ids it placed rather than letting
+/// callers infer them from the value it substituted — after copying, the source's
+/// ids appear nowhere in the result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub u32);
 

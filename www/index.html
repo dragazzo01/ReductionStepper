@@ -74,24 +74,7 @@
       <li><code>fun</code> is elaborated into <code>val</code>/<code>val rec</code>,
         so you get to watch the desugaring. Its first clause needs its argument
         types annotated (and the result type too, if it's recursive).</li>
-      <li>Two functions may share a name without either being renamed: variables
-        refer to their binding site rather than to a spelling.</li>
     </ol>
-    <p>Some programs to try:</p>
-    <pre>val (x, z) = (5 + 5, 5 - 4)
-val y = let val x = 5 in x * z end
-val z = x + y
-
-val rec fact : int -&gt; int = fn 0 : int =&gt; 1 | x =&gt; x * fact (x - 1)
-val a = fact 3
-
-fun fib (0 : int) : int = 1
-  | fib 1 = 1
-  | fib n = fib (n - 1) + fib (n - 2)
-val _ = fib 3
-
-fun curriedAdd (x : int) (y : int) = x + y
-val _ = curriedAdd 1 2</pre>
   </details>
 
   <div class="controls">

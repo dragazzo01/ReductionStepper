@@ -303,6 +303,26 @@ fn folding_the_inner_lambda_of_a_curried_function_leaves_the_outer_one() {
 }
 
 #[test]
+fn folding_one_copy_of_a_lambda_leaves_the_others_expanded() {
+    // Substituting a lambda into two use sites makes two independent nodes, so
+    // folding is per-copy: clicking the one in `a` doesn't touch the one in `b`.
+    let program = parse(
+        "val classify = fn n : int => n * 100\nval a = classify 1\nval b = classify 7",
+    );
+    let (program, _) = step_once(&program);
+    let ids = lambda_ids(&program);
+    assert_eq!(ids.len(), 2, "one lambda per use site, each its own node");
+    assert_eq!(
+        show_folded(&program, &ids[..1]),
+        "val a = (fn n => ...) 1\nval b = (fn n : int => n * 100) 7"
+    );
+    assert_eq!(
+        show_folded(&program, &ids[1..]),
+        "val a = (fn n : int => n * 100) 1\nval b = (fn n => ...) 7"
+    );
+}
+
+#[test]
 fn folding_changes_where_lines_break() {
     // Folding isn't a CSS trick: it changes the node's width, so it changes the
     // line-breaking of every group around it. That's why it's read while the

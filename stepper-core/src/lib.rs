@@ -134,9 +134,10 @@ pub fn step_formula() -> String {
 
 /// Folds or unfolds the lambda `node_id`, and reports whether it's now folded.
 ///
-/// Ids repeat across copies of a subtree (see `ast::NodeId`), so folding a
-/// recursive function folds every unrolling of it at once — which is the useful
-/// behavior while watching one unroll.
+/// One lambda, not every copy of it: substitution and unrolling give each copy
+/// its own ids (see `ast::NodeId`), so this folds the one that was clicked. A
+/// fold does survive steps that don't duplicate the lambda, since those leave its
+/// id alone.
 #[wasm_bindgen]
 pub fn toggle_collapse(node_id: u32) -> bool {
     SESSION.with(|s| s.borrow_mut().view.toggle_collapsed(ast::NodeId(node_id)))
