@@ -11,12 +11,10 @@
 //!
 //! The one place this can fail is a malformed `fun` binding (clauses that disagree
 //! on the function's name, its arity or its result type, or a recursive function
-//! with nothing to build its type annotation from). A grammar action can't fail a
-//! parse, so `fun_decl` records those into the parse-time error channel
-//! (`grammar.y`'s `%parse-param`) and hands back a placeholder that
-//! `frontend::parse_program` discards along with the rest of the program.
+//! with nothing to build its type annotation from). `frontend::lower` calls
+//! `elaborate` while walking the parsed tree and attaches the source range of the
+//! `fun` to whatever it reports.
 
-use std::cell::RefCell;
 use std::collections::HashSet;
 
 use super::ast::{Binder, Decl, Expr, ExprKind, Pattern, PatternBase, Type, ValDecl};
@@ -31,20 +29,9 @@ pub struct FunClause {
     pub body: Expr,
 }
 
-/// The grammar's entry point: elaborates `clauses`, or records why it couldn't and
-/// returns a placeholder decl — `parse_program` turns a non-empty `errors` into a
-/// parse failure, so the placeholder never reaches a caller.
-pub fn fun_decl(clauses: Vec<FunClause>, errors: &RefCell<Vec<String>>) -> Decl {
-    elaborate(clauses).unwrap_or_else(|message| {
-        errors.borrow_mut().push(message);
-        Decl::ValDecl(ValDecl {
-            pat: Pattern::untyped(PatternBase::Wildcard),
-            expr: Expr::new(ExprKind::IntConst(0)),
-        })
-    })
-}
-
-fn elaborate(clauses: Vec<FunClause>) -> Result<Decl, String> {
+/// Elaborates one `fun` declaration's clauses into the `val`/`val rec` they stand
+/// for, or says why they don't stand for one.
+pub fn elaborate(clauses: Vec<FunClause>) -> Result<Decl, String> {
     let first = clauses
         .first()
         .expect("grammar: FunClauses always has at least one clause");

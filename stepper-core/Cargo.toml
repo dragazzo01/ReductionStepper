@@ -8,10 +8,27 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 wasm-bindgen = "0.2"
-lrlex = "0.13"
-lrpar = "0.13"
-cfgrammar = "0.13"
 console_error_panic_hook = "0.1"
+
+# The SML front end is millet's (https://github.com/azdavis/millet), an SML
+# language server: `sml-lex` and `sml-parse` produce a full-SML concrete syntax
+# tree, which `frontend/lower.rs` lowers into this crate's AST. Pinned by rev
+# because these crates are `publish = false` and make no stability promise.
+[dependencies.sml-lex]
+git = "https://github.com/azdavis/millet.git"
+rev = "4df3186429d1f7822d66a44114eac973f4e1e6df"
+
+[dependencies.sml-parse]
+git = "https://github.com/azdavis/millet.git"
+rev = "4df3186429d1f7822d66a44114eac973f4e1e6df"
+
+[dependencies.sml-syntax]
+git = "https://github.com/azdavis/millet.git"
+rev = "4df3186429d1f7822d66a44114eac973f4e1e6df"
+
+[dependencies.sml-fixity]
+git = "https://github.com/azdavis/millet.git"
+rev = "4df3186429d1f7822d66a44114eac973f4e1e6df"
 
 # Only the browser build needs the DOM bindings. Keeping them off the native
 # target is what keeps `cargo test` — the fast loop for interpreter work — from
@@ -27,8 +44,3 @@ features = [
     "Text",
     "Window",
 ]
-
-[build-dependencies]
-lrlex = "0.13"
-lrpar = "0.13"
-cfgrammar = "0.13"

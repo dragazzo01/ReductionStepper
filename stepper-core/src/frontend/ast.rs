@@ -121,6 +121,31 @@ pub enum BinOp {
 }
 
 impl BinOp {
+    /// Every operator, which is what makes `from_symbol` the exact inverse of
+    /// `symbol` without a second list of spellings to keep in step.
+    pub const ALL: [BinOp; 11] = [
+        BinOp::Add,
+        BinOp::Sub,
+        BinOp::Mul,
+        BinOp::Div,
+        BinOp::Mod,
+        BinOp::Eq,
+        BinOp::Ne,
+        BinOp::Lt,
+        BinOp::Le,
+        BinOp::Gt,
+        BinOp::Ge,
+    ];
+
+    /// The operator SML spells `symbol`, if it is one this crate evaluates.
+    /// `frontend::lower` needs this because millet's parser reports an infix
+    /// operator by *name*: it has already grouped the expression by precedence,
+    /// user-declared `infix` operators included, and leaves deciding what a name
+    /// means to whoever consumes the tree.
+    pub fn from_symbol(symbol: &str) -> Option<BinOp> {
+        BinOp::ALL.into_iter().find(|op| op.symbol() == symbol)
+    }
+
     /// How SML spells this operator. Lives here rather than in `pretty` because
     /// the stepper's messages need it too, and there is exactly one right answer.
     pub fn symbol(self) -> &'static str {
