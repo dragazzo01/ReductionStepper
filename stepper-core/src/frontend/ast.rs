@@ -97,6 +97,74 @@ impl PartialEq for Binder {
     }
 }
 
+/// A binary operator whose two operands are simply reduced, left to right, and
+/// then combined. Every such operator shares one `ExprKind`, one typing rule and
+/// one reduction rule; all that distinguishes them is the spelling, the
+/// precedence and the arithmetic, each looked up by the module that cares.
+///
+/// `andalso`/`orelse` are deliberately *not* here: they short-circuit, so their
+/// right operand may never be evaluated at all, and neither is `~`, which is
+/// unary and atomic in the grammar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl BinOp {
+    /// Every operator, which is what makes `from_symbol` the exact inverse of
+    /// `symbol` without a second list of spellings to keep in step.
+    pub const ALL: [BinOp; 11] = [
+        BinOp::Add,
+        BinOp::Sub,
+        BinOp::Mul,
+        BinOp::Div,
+        BinOp::Mod,
+        BinOp::Eq,
+        BinOp::Ne,
+        BinOp::Lt,
+        BinOp::Le,
+        BinOp::Gt,
+        BinOp::Ge,
+    ];
+
+    /// The operator SML spells `symbol`, if it is one this crate evaluates.
+    /// `frontend::lower` needs this because millet's parser reports an infix
+    /// operator by *name*: it has already grouped the expression by precedence,
+    /// user-declared `infix` operators included, and leaves deciding what a name
+    /// means to whoever consumes the tree.
+    pub fn from_symbol(symbol: &str) -> Option<BinOp> {
+        BinOp::ALL.into_iter().find(|op| op.symbol() == symbol)
+    }
+
+    /// How SML spells this operator. Lives here rather than in `pretty` because
+    /// the stepper's messages need it too, and there is exactly one right answer.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "div",
+            BinOp::Mod => "mod",
+            BinOp::Eq => "=",
+            BinOp::Ne => "<>",
+            BinOp::Lt => "<",
+            BinOp::Le => "<=",
+            BinOp::Gt => ">",
+            BinOp::Ge => ">=",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Int,
@@ -145,6 +213,10 @@ impl Expr {
     pub fn var(binder: Binder) -> Expr {
         Expr::new(ExprKind::Var(binder))
     }
+
+    pub fn binop(op: BinOp, l: Expr, r: Expr) -> Expr {
+        Expr::new(ExprKind::BinOp(op, Box::new(l), Box::new(r)))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,18 +224,8 @@ pub enum ExprKind {
     IntConst(i64),
     BoolConst(bool),
     Var(Binder),
-    Add(Box<Expr>, Box<Expr>),
-    Sub(Box<Expr>, Box<Expr>),
-    Mul(Box<Expr>, Box<Expr>),
-    Div(Box<Expr>, Box<Expr>),
-    Mod(Box<Expr>, Box<Expr>),
+    BinOp(BinOp, Box<Expr>, Box<Expr>),
     Neg(Box<Expr>),
-    Eq(Box<Expr>, Box<Expr>),
-    Ne(Box<Expr>, Box<Expr>),
-    Lt(Box<Expr>, Box<Expr>),
-    Le(Box<Expr>, Box<Expr>),
-    Gt(Box<Expr>, Box<Expr>),
-    Ge(Box<Expr>, Box<Expr>),
     AndAlso(Box<Expr>, Box<Expr>),
     OrElse(Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
@@ -308,17 +370,7 @@ pub fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
     match &expr.kind {
         ExprKind::IntConst(_) | ExprKind::BoolConst(_) | ExprKind::Var(_) => {}
         ExprKind::Neg(inner) => walk_expr(inner, f),
-        ExprKind::Add(l, r)
-        | ExprKind::Sub(l, r)
-        | ExprKind::Mul(l, r)
-        | ExprKind::Div(l, r)
-        | ExprKind::Mod(l, r)
-        | ExprKind::Eq(l, r)
-        | ExprKind::Ne(l, r)
-        | ExprKind::Lt(l, r)
-        | ExprKind::Le(l, r)
-        | ExprKind::Gt(l, r)
-        | ExprKind::Ge(l, r)
+        ExprKind::BinOp(_, l, r)
         | ExprKind::AndAlso(l, r)
         | ExprKind::OrElse(l, r)
         | ExprKind::App(l, r) => {

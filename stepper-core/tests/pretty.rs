@@ -66,8 +66,10 @@ fn prints_unary_minus() {
     round_trips("val x = ~2 * 3");
     // Applied to a compound expression, it needs parens to reparse correctly.
     round_trips("val x = ~(1 + 2)");
-    // Double negation round-trips without needing parens between the two `~`s.
-    round_trips("val x = ~~5");
+    // Double negation needs the space: SML lexes the longest symbolic identifier
+    // it can, so `~~5` would come back as the identifier `~~` applied to `5`.
+    round_trips("val x = ~ ~5");
+    prints_as("val x = ~(~5)", "val x = ~ ~5");
     // SML spells negative literals with `~`, not `-`.
     assert_eq!(
         pretty_print(&vec![val(pvar("x"), Expr::IntConst(-5))]),
@@ -91,17 +93,23 @@ fn prints_if_bare_at_top_level_but_parenthesized_as_an_operand() {
 #[test]
 fn prints_comparisons() {
     round_trips("val x = 1 + 2 < 3 * 4");
-    // Nonassociative, so a comparison nested inside another keeps its parens.
-    round_trips("val x = (1 < 2) = (3 < 4)");
+    // Left-associative, all at one precedence, so parens on the left are the
+    // grouping it would have had anyway and come back off; only the right side
+    // keeps them.
+    prints_as("val x = (1 < 2) = (3 < 4)", "val x = 1 < 2 = (3 < 4)");
 }
 
 #[test]
 fn prints_andalso_orelse() {
     round_trips("val x = true andalso true andalso false");
     round_trips("val x = true orelse false andalso false");
-    // Right-associative, so unlike +, it's the LEFT side that needs parens when a
-    // same-precedence op is nested there (only reachable via explicit parens).
-    round_trips("val x = (true andalso true) andalso false");
+    // Left-associative, exactly like `+`: parens on the left say what the grouping
+    // already was, so they come off, and it's the right side that keeps them.
+    prints_as(
+        "val x = (true andalso true) andalso false",
+        "val x = true andalso true andalso false",
+    );
+    round_trips("val x = true andalso (true andalso false)");
 }
 
 #[test]

@@ -39,7 +39,8 @@ fn uses_sml_floor_division_not_truncating_division() {
 fn reduces_unary_minus() {
     // A negative literal is already a value: nothing to step.
     assert_eq!(run("val x = ~5"), "val x = ~5");
-    assert_eq!(run("val x = ~~5"), "val x = 5");
+    // `~ ~5` needs the space, or the two `~`s lex as one identifier.
+    assert_eq!(run("val x = ~ ~5"), "val x = 5");
     assert_eq!(run("val x = ~(2 + 3)"), "val x = ~5");
 }
 

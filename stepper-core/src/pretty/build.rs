@@ -3,8 +3,9 @@
 //! Two things are going on in every function here, and they're independent:
 //!
 //! - **Precedence**, which decides parentheses. This is the same numeric ladder
-//!   the printer has always used and it has to stay in step with `grammar.y`, or
-//!   printing a program and re-parsing it stops giving back the same tree. See
+//!   the printer has always used and it has to stay in step with how SML groups
+//!   things (see `frontend::lower`), or printing a program and re-parsing it stops
+//!   giving back the same tree. See
 //!   [`expr_doc`] for the ladder itself.
 //! - **Grouping**, which decides line breaks. Every construct that can be spread
 //!   over several lines wraps its pieces in a `Group` with `Line`s between them,
@@ -17,7 +18,7 @@
 //! time, because folding one changes its width and therefore the line-breaking of
 //! every group around it.
 
-use crate::ast::{Decl, Expr, ExprKind, Pattern, PatternBase, Program, Type, ValDecl};
+use crate::ast::{BinOp, Decl, Expr, ExprKind, Pattern, PatternBase, Program, Type, ValDecl};
 use crate::view::ViewState;
 
 use super::doc::{Ann, Doc};
@@ -52,6 +53,16 @@ fn parens_if(needed: bool, doc: Doc) -> Doc {
         Doc::concat(vec![Doc::text("("), doc, Doc::text(")")])
     } else {
         doc
+    }
+}
+
+/// Whether this expression prints starting with a `~` — the two forms that do
+/// being a negation and a negative literal. See the `Neg` arm of `expr_body`.
+fn starts_with_tilde(expr: &Expr) -> bool {
+    match expr.kind {
+        ExprKind::Neg(_) => true,
+        ExprKind::IntConst(n) => n < 0,
+        _ => false,
     }
 }
 
@@ -199,11 +210,8 @@ fn type_atom_string(ty: &Type) -> String {
 /// left-associative same-precedence nesting (`(a + b) + c`) prints bare while the
 /// same tree on the right (`a + (b + c)`) — only reachable via explicit parens in
 /// the source — gets parens back, since without them it would reparse
-/// differently. `andalso`/`orelse` are right-associative, so it's the mirror image
-/// (right child gets `own`, left child gets `own+1`). Comparisons are
-/// nonassociative (the grammar rejects `a < b < c` outright), so both of their
-/// children use `own+1`: a comparison nested on *either* side of another needs
-/// parens to stay meaningful.
+/// differently. Every binary operator here is left-associative, comparisons and
+/// `andalso`/`orelse` included, matching how the parser groups them.
 ///
 /// Every expression is wrapped in its own `Ann::Node`, so the backends can find
 /// the region belonging to any node — that's what highlighting paints and what
@@ -217,26 +225,30 @@ fn expr_body(expr: &Expr, min_prec: u8, view: &ViewState) -> Doc {
         ExprKind::IntConst(n) => lit(format_int(*n)),
         ExprKind::BoolConst(b) => lit(b.to_string()),
         ExprKind::Var(binder) => var(&binder.name),
-        ExprKind::OrElse(l, r) => binop_doc(l, r, "orelse", 1, 2, 1, min_prec, view),
-        ExprKind::AndAlso(l, r) => binop_doc(l, r, "andalso", 2, 3, 2, min_prec, view),
-        ExprKind::Eq(l, r) => binop_doc(l, r, "=", 3, 4, 4, min_prec, view),
-        ExprKind::Ne(l, r) => binop_doc(l, r, "<>", 3, 4, 4, min_prec, view),
-        ExprKind::Lt(l, r) => binop_doc(l, r, "<", 3, 4, 4, min_prec, view),
-        ExprKind::Le(l, r) => binop_doc(l, r, "<=", 3, 4, 4, min_prec, view),
-        ExprKind::Gt(l, r) => binop_doc(l, r, ">", 3, 4, 4, min_prec, view),
-        ExprKind::Ge(l, r) => binop_doc(l, r, ">=", 3, 4, 4, min_prec, view),
-        ExprKind::Add(l, r) => binop_doc(l, r, "+", 4, 4, 5, min_prec, view),
-        ExprKind::Sub(l, r) => binop_doc(l, r, "-", 4, 4, 5, min_prec, view),
-        ExprKind::Mul(l, r) => binop_doc(l, r, "*", 5, 5, 6, min_prec, view),
-        ExprKind::Div(l, r) => binop_doc(l, r, "div", 5, 5, 6, min_prec, view),
-        ExprKind::Mod(l, r) => binop_doc(l, r, "mod", 5, 5, 6, min_prec, view),
-        // Atomic, matching the grammar's `AtomicExpr -> '~' AtomicExpr`: its
-        // operand is an atom, so anything compound — an application included —
-        // takes parens (`~(f x)`), while `~~5` and `~x` stay bare. Never broken:
+        ExprKind::OrElse(l, r) => binop_doc(l, r, "orelse", (1, 1, 2), min_prec, view),
+        ExprKind::AndAlso(l, r) => binop_doc(l, r, "andalso", (2, 2, 3), min_prec, view),
+        ExprKind::BinOp(op, l, r) => {
+            binop_doc(l, r, op.symbol(), binop_prec(*op), min_prec, view)
+        }
+        // Atomic: its operand is an atom, so anything compound — an application
+        // included — takes parens (`~(f x)`), while `~x` stays bare. Never broken:
         // there's no room for a line break between `~` and its operand.
+        //
+        // The space matters when the operand starts with a `~` of its own. SML
+        // lexes the longest symbolic identifier it can, so `~~5` is the identifier
+        // `~~` applied to `5`, and printing `~ (~5)` that way would reparse as
+        // something else entirely.
         ExprKind::Neg(inner) => parens_if(
             7 < min_prec,
-            Doc::concat(vec![op("~"), expr_doc(inner, 7, view)]),
+            Doc::concat(vec![
+                op("~"),
+                if starts_with_tilde(inner) {
+                    space()
+                } else {
+                    Doc::Nil
+                },
+                expr_doc(inner, 7, view),
+            ]),
         ),
         // Precedence 0 (lower than everything, matching the grammar's
         // `%nonassoc 'ELSE'` at the lowest level): as soon as an if-expression
@@ -281,8 +293,8 @@ fn expr_body(expr: &Expr, min_prec: u8, view: &ViewState) -> Doc {
         // it sits inside anything else. The scrutinee and each arm's body are
         // built unrestricted (0), since the keywords/`=>`/`|` already delimit
         // them; a nested `case` as the last arm's body prints bare and simply
-        // absorbs any further `|` arms, mirroring the grammar's own shift
-        // preference (see grammar.y's `MatchArms`).
+        // absorbs any further `|` arms, the same nearest-wins resolution SML
+        // itself gives a dangling arm.
         ExprKind::Match(scrutinee, arms) => parens_if(
             0 < min_prec,
             Doc::align(Doc::group(Doc::concat(vec![
@@ -314,12 +326,12 @@ fn expr_body(expr: &Expr, min_prec: u8, view: &ViewState) -> Doc {
         // and means `(~f) x`, matching the grammar. Left-associative, so the left
         // child accepts its own precedence (nested application prints bare —
         // `f x y`, not `(f x) y`) while the right child needs strictly higher,
-        // since the grammar's `AtomicExpr` never includes a bare `App` — `f (g x)`
-        // only round-trips with parens.
+        // since SML's `atexp` never includes a bare `App` — `f (g x)` only
+        // round-trips with parens.
         ExprKind::App(..) => app_body(expr, min_prec, view),
         // Bracketed by `let`/`end` on both sides, so — unlike `if` — this is a
-        // true atom, one of SML's `atexp` forms (see grammar.y's `AtomicExpr`):
-        // never needs its own wrapping parens regardless of `min_prec`, even as an
+        // true atom, one of SML's `atexp` forms: never needs its own wrapping
+        // parens regardless of `min_prec`, even as an
         // application argument. Its decls and body are likewise built unrestricted
         // (0), since the keywords already delimit them.
         ExprKind::Let(decls, body) => {
@@ -469,14 +481,25 @@ fn collapsed_lambda_doc(cases: &[(Pattern, Expr)], view: &ViewState) -> Doc {
     ])
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Where each [`BinOp`] sits on the ladder, as `(own, left_min, right_min)`.
+///
+/// Every one of these is left-associative, so the left child accepts the
+/// operator's own precedence and the right child needs one more. The numbers have
+/// to mirror the standard basis' fixities, which is what the parser groups by —
+/// see `sml_fixity::STD_BASIS`.
+fn binop_prec(op: BinOp) -> (u8, u8, u8) {
+    match op {
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => (3, 3, 4),
+        BinOp::Add | BinOp::Sub => (4, 4, 5),
+        BinOp::Mul | BinOp::Div | BinOp::Mod => (5, 5, 6),
+    }
+}
+
 fn binop_doc(
     l: &Expr,
     r: &Expr,
     operator: &str,
-    own_prec: u8,
-    left_min: u8,
-    right_min: u8,
+    (own_prec, left_min, right_min): (u8, u8, u8),
     min_prec: u8,
     view: &ViewState,
 ) -> Doc {

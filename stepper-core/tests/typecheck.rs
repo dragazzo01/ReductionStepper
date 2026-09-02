@@ -43,6 +43,15 @@ fn rejects_an_unbound_identifier() {
 }
 
 #[test]
+fn rejects_a_chained_comparison() {
+    // SML's comparisons are left-associative rather than nonassociative, so
+    // `1 < 2 < 3` parses (see `grammar.rs`'s
+    // `chained_comparisons_group_to_the_left`) and is caught here instead: the
+    // left operand of the outer `<` is a bool.
+    rejects("val x = 1 < 2 < 3", "Expected Int but got type Bool");
+}
+
+#[test]
 fn later_decls_see_earlier_bindings_but_not_the_reverse() {
     // `x` is visible to `y`, matching evaluation order, but declaring them in the
     // other order should fail: `y` isn't in scope yet when `x` is checked.

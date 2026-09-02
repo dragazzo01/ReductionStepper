@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use crate::ast::{BinderId, Decl, Expr, ExprKind, Pattern, PatternBase, Program, Type, ValDecl};
+use crate::ast::{
+    BinOp, BinderId, Decl, Expr, ExprKind, Pattern, PatternBase, Program, Type, ValDecl,
+};
 use crate::pretty::{pretty_print_expr, pretty_print_pattern};
 
 /// Maps each variable — identified by its binding site, not its name — to its
@@ -19,6 +21,14 @@ fn same_type(typ1: &Type, typ2: &Type) -> bool {
     typ1 == typ2
 }
 
+/// Every binary operator takes two ints — they differ only in what they produce.
+fn binop_result_type(op: BinOp) -> Type {
+    match op {
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => Type::Int,
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Type::Bool,
+    }
+}
+
 fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
     match &expr.kind {
         ExprKind::IntConst(_) => Ok(Type::Int),
@@ -31,28 +41,14 @@ fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
             .cloned()
             .ok_or_else(|| format!("Unbound identifier: {}", binder.name)),
 
-        ExprKind::Add(e1, e2)
-        | ExprKind::Sub(e1, e2)
-        | ExprKind::Mul(e1, e2)
-        | ExprKind::Div(e1, e2)
-        | ExprKind::Mod(e1, e2) => {
+        ExprKind::BinOp(op, e1, e2) => {
             check_expr_type(env, e1, &Type::Int)?;
             check_expr_type(env, e2, &Type::Int)?;
-            Ok(Type::Int)
+            Ok(binop_result_type(*op))
         }
         ExprKind::Neg(e1) => {
             check_expr_type(env, e1, &Type::Int)?;
             Ok(Type::Int)
-        }
-        ExprKind::Eq(e1, e2)
-        | ExprKind::Ne(e1, e2)
-        | ExprKind::Lt(e1, e2)
-        | ExprKind::Le(e1, e2)
-        | ExprKind::Gt(e1, e2)
-        | ExprKind::Ge(e1, e2) => {
-            check_expr_type(env, e1, &Type::Int)?;
-            check_expr_type(env, e2, &Type::Int)?;
-            Ok(Type::Bool)
         }
         ExprKind::AndAlso(e1, e2) | ExprKind::OrElse(e1, e2) => {
             check_expr_type(env, e1, &Type::Bool)?;

@@ -2,4 +2,8 @@
 /www/pkg
 /.deploy
 todo.txt
-Cargo.lock
+
+# Cargo.lock is checked in: the SML parser comes from millet by git rev, and
+# millet's own dependencies on azdavis/language-util carry no rev at all, so the
+# lockfile is the only thing pinning them. Without it a fresh checkout resolves
+# those to whatever HEAD happens to be.
