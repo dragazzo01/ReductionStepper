@@ -36,6 +36,8 @@ pub fn highlight_next(program: &Program) -> Option<NodeId> {
 fn highlight_next_expr(expr: &Expr) -> Option<NodeId> {
     match &expr.kind {
         ExprKind::IntConst(_)
+        | ExprKind::RealConst(_)
+        | ExprKind::StringConst(_)
         | ExprKind::BoolConst(_)
         | ExprKind::Unit
         | ExprKind::Lambda(..) => None,

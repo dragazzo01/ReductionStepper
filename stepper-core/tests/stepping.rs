@@ -517,3 +517,113 @@ fn a_fun_that_takes_a_tuple_apart_binds_its_components() {
         "val s = 3"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Strings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reduces_concatenation_left_to_right() {
+    let program = parse("val s = \"a\" ^ \"b\" ^ \"c\"");
+
+    // Left-associative, so the left `^` is the inner node and reduces first.
+    let (program, msg) = step_once(&program);
+    assert_eq!(msg, "Evaluated \"a\" ^ \"b\" to \"ab\"");
+    assert_eq!(show(&program), "val s = \"ab\" ^ \"c\"");
+
+    let (program, msg) = step_once(&program);
+    assert_eq!(msg, "Evaluated \"ab\" ^ \"c\" to \"abc\"");
+    assert_eq!(show(&program), "val s = \"abc\"");
+
+    assert_eq!(stepping::step(&program), None);
+}
+
+#[test]
+fn a_string_literal_is_already_a_value() {
+    assert_eq!(run("val s = \"hi\""), "val s = \"hi\"");
+    // The characters are what's stored; the escapes come back at print time.
+    assert_eq!(run("val s = \"a\\tb\""), "val s = \"a\\tb\"");
+}
+
+#[test]
+fn compares_strings_lexicographically() {
+    assert_eq!(run("val b = \"a\" < \"b\""), "val b = true");
+    assert_eq!(run("val b = \"abc\" < \"ab\""), "val b = false");
+    assert_eq!(run("val b = \"\" <= \"a\""), "val b = true");
+    assert_eq!(run("val b = \"a\" = \"a\""), "val b = true");
+    assert_eq!(run("val b = \"a\" <> \"A\""), "val b = true");
+}
+
+#[test]
+fn a_string_pattern_picks_the_arm_that_matches_it() {
+    let src = "fun greet (\"hi\" : string) = \"hello\" | greet s = s ^ \"?\"\n";
+    assert_eq!(
+        run(&format!("{src}val a = greet \"hi\"")),
+        "val a = \"hello\""
+    );
+    assert_eq!(
+        run(&format!("{src}val a = greet \"yo\"")),
+        "val a = \"yo?\""
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reals
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reduces_real_arithmetic() {
+    let program = parse("val r = 1.5 + 2.0 * 3.0");
+
+    let (program, msg) = step_once(&program);
+    assert_eq!(msg, "Evaluated 2.0 * 3.0 to 6.0");
+    assert_eq!(show(&program), "val r = 1.5 + 6.0");
+
+    let (program, msg) = step_once(&program);
+    assert_eq!(msg, "Evaluated 1.5 + 6.0 to 7.5");
+    assert_eq!(show(&program), "val r = 7.5");
+
+    assert_eq!(stepping::step(&program), None);
+}
+
+#[test]
+fn real_division_does_not_round() {
+    assert_eq!(run("val r = 3.0 / 2.0"), "val r = 1.5");
+    assert_eq!(run("val r = ~7.0 / 2.0"), "val r = ~3.5");
+    // Nothing rounds the result to something prettier than it is, either.
+    assert_eq!(run("val r = 0.1 + 0.2"), "val r = 0.30000000000000004");
+}
+
+#[test]
+fn dividing_a_real_by_zero_gives_an_infinity_rather_than_raising() {
+    // SML's reals are IEEE 754, so unlike `div` there's nothing to raise on: the
+    // result is an infinity, or a `nan` when the dividend is zero too.
+    assert_eq!(run("val r = 1.0 / 0.0"), "val r = inf");
+    assert_eq!(run("val r = ~1.0 / 0.0"), "val r = ~inf");
+    assert_eq!(run("val r = 0.0 / 0.0"), "val r = nan");
+}
+
+#[test]
+fn negates_a_real() {
+    assert_eq!(run("val r = ~(1.0 + 0.5)"), "val r = ~1.5");
+    // `~ ~1.5` needs its space: `~~` would lex as one symbolic identifier.
+    assert_eq!(run("val r = ~ ~1.5"), "val r = 1.5");
+}
+
+#[test]
+fn compares_reals() {
+    assert_eq!(run("val b = 1.5 < 2.0"), "val b = true");
+    assert_eq!(run("val b = ~1.5 < 0.0"), "val b = true");
+    assert_eq!(run("val b = 2.0 >= 2.0"), "val b = true");
+    // Every comparison with a `nan` is false, `<=` included — which is exactly
+    // why `real` isn't an equality type.
+    assert_eq!(run("val b = 0.0 / 0.0 <= 1.0"), "val b = false");
+}
+
+#[test]
+fn applies_a_function_over_reals() {
+    assert_eq!(
+        run("val g = fn x : real => x * x\nval v = g 2.5"),
+        "val v = 6.25"
+    );
+}

@@ -58,3 +58,16 @@ val total = sumTo 6
 fun factCPS (0 : int) (k : int -> int) : int = k 1
   | factCPS x k = factCPS (x - 1) (fn res : int => k (x * res))
 val answer = factCPS 4 (fn x : int => x)
+
+# Strings and string patterns
+fun greet ("hi" : string) : string = "hello there"
+  | greet name = "hello, " ^ name ^ "!"
+val a = greet "hi"
+val b = greet "world"
+val same = a = b
+
+# Reals: overloaded arithmetic, and the division that isn't div
+fun average (x : real, y : real) : real = (x + y) / 2.0
+val mid = average (1.5, 4.0)
+val big = mid > 2.0
+val neg = ~mid

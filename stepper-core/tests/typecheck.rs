@@ -109,8 +109,9 @@ fn rejects_a_chained_comparison() {
     // SML's comparisons are left-associative rather than nonassociative, so
     // `1 < 2 < 3` parses (see `grammar.rs`'s
     // `chained_comparisons_group_to_the_left`) and is caught here instead: the
-    // left operand of the outer `<` is a bool.
-    rejects("val x = 1 < 2 < 3", "Expected Int but got type Bool");
+    // left operand of the outer `<` is a bool. `<` is overloaded over the ordered
+    // types, so it can't say what it expected — only that a bool isn't one.
+    rejects("val x = 1 < 2 < 3", "`<` cannot be applied to Bool");
 }
 
 #[test]
@@ -192,7 +193,7 @@ fn a_tuple_pattern_binds_each_component_its_own_type() {
     accepts("val (x, y) = (1, true)\nval z = y");
     rejects(
         "val (x, y) = (1, true)\nval z = y + 1",
-        "Expected Int but got type Bool",
+        "`+` cannot be applied to Bool",
     );
 }
 
@@ -336,7 +337,7 @@ fn rejects_negating_a_function() {
     // `~ f x` parses as `(~f) x`, so it fails the same way SML's does.
     rejects(
         "val f : int -> int = fn x : int => x val z = ~ f 1",
-        "Expected Int but got type Arrow(Int, Int)",
+        "`~` cannot be applied to Arrow(Int, Int)",
     );
 }
 
@@ -443,4 +444,89 @@ fn a_curried_fun_is_a_function_returning_a_function() {
         "fun add (x : int) (y : int) : int = x + y\nval n : int = add 1",
         "Expected Int but got type Arrow(Int, Int)",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Strings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn concat_takes_two_strings_and_gives_a_string() {
+    accepts("val s : string = \"a\" ^ \"b\"");
+    accepts("val f : string -> string = fn s : string => s ^ \"!\"");
+    rejects("val s = \"a\" ^ 1", "Expected String but got type Int");
+    rejects("val s = 1 ^ \"a\"", "`^` cannot be applied to Int");
+    rejects("val s = 1.0 ^ 2.0", "`^` cannot be applied to Real");
+}
+
+#[test]
+fn strings_are_ordered_and_are_an_equality_type() {
+    accepts("val b : bool = \"a\" < \"b\"");
+    accepts("val b : bool = \"a\" >= \"b\"");
+    accepts("val b : bool = \"a\" = \"a\"");
+    accepts("val b : bool = (\"a\", 1) <> (\"b\", 2)");
+    rejects("val b = \"a\" < 1", "Expected String but got type Int");
+}
+
+#[test]
+fn arithmetic_is_not_a_string_operator() {
+    rejects("val s = \"a\" + \"b\"", "`+` cannot be applied to String");
+    rejects("val s = \"a\" div \"b\"", "`div` cannot be applied to String");
+    rejects("val s = ~\"a\"", "`~` cannot be applied to String");
+}
+
+#[test]
+fn a_string_pattern_matches_a_string_and_nothing_else() {
+    accepts("val f = fn s : string => case s of \"a\" => 1 | _ => 2");
+    rejects_somehow("val f = fn n : int => case n of \"a\" => 1 | _ => 2");
+}
+
+// ---------------------------------------------------------------------------
+// Reals
+// ---------------------------------------------------------------------------
+
+#[test]
+fn real_arithmetic_gives_back_a_real() {
+    // `+`, `-`, `*` and `~` are overloaded over the two numeric types and hand
+    // back whichever they were given; the operands still have to agree.
+    accepts("val r : real = 1.5 + 2.5 - 1.0 * 2.0");
+    accepts("val r : real = ~1.5");
+    accepts("val g : real -> real = fn x : real => x * x");
+    rejects("val r = 1.0 + 2", "Expected Real but got type Int");
+    rejects("val r = 1 + 2.0", "Expected Int but got type Real");
+}
+
+#[test]
+fn the_two_divisions_are_each_specific_to_one_type() {
+    // SML spells them differently because they *are* different operators, not two
+    // overloadings of one: `/` is real division and `div` is the int one.
+    accepts("val r : real = 3.0 / 2.0");
+    accepts("val n : int = 3 div 2");
+    rejects("val r = 3 / 2", "`/` cannot be applied to Int");
+    rejects("val r = 3.0 div 2.0", "`div` cannot be applied to Real");
+    rejects("val r = 3.0 mod 2.0", "`mod` cannot be applied to Real");
+}
+
+#[test]
+fn reals_are_ordered_but_are_not_an_equality_type() {
+    accepts("val b : bool = 1.0 < 2.0");
+    accepts("val b : bool = 1.0 >= 2.0");
+    // `nan` isn't equal to itself, so `=` on reals wouldn't be an equality — SML
+    // leaves `real` out of the equality types for exactly that reason.
+    rejects(
+        "val b = 1.0 = 1.0",
+        "`=` needs an equality type, but Real is not one",
+    );
+    rejects(
+        "val b = (1.0, 2) <> (1.0, 2)",
+        "`<>` needs an equality type, but Product([Real, Int]) is not one",
+    );
+}
+
+#[test]
+fn only_the_ordered_types_may_be_compared() {
+    // `bool` and `unit` are equality types but have no order in SML.
+    rejects("val b = true < false", "`<` cannot be applied to Bool");
+    rejects("val b = () <= ()", "`<=` cannot be applied to Unit");
+    accepts("val b : bool = true = false");
 }
