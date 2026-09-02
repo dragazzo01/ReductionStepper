@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use crate::ast::{BinderId, Decl, Expr, ExprKind, Pattern, PatternBase, Program, Type, ValDecl};
+use crate::ast::{
+    BinOp, BinderId, Decl, Expr, ExprKind, Pattern, PatternBase, Program, Type, ValDecl,
+};
 use crate::pretty::{pretty_print_expr, pretty_print_pattern};
 
 /// Maps each variable — identified by its binding site, not its name — to its
@@ -19,10 +21,69 @@ fn same_type(typ1: &Type, typ2: &Type) -> bool {
     typ1 == typ2
 }
 
+/// What a binary operator produces when both its operands have type `operand`,
+/// or why it doesn't accept that type at all.
+///
+/// Every `BinOp` takes two operands of *one* type — which one is the whole
+/// question, since most of them are overloaded (see `ast::BinOp`). SML resolves
+/// overloading by unification and a default; with no unification engine here,
+/// the left operand's inferred type simply decides, and the right is then checked
+/// against it (see the `BinOp` arm of `infer_expr_type`). That's the same answer
+/// for every program a full SML compiler wouldn't need the default rule for.
+fn binop_result_type(op: BinOp, operand: &Type) -> Result<Type, String> {
+    // `=` and `<>` are the polymorphic pair, admitting a whole class of types
+    // rather than a listed few, so they get their own answer and their own way of
+    // saying no.
+    if let BinOp::Eq | BinOp::Ne = op {
+        return match is_equality_type(operand) {
+            true => Ok(Type::Bool),
+            false => Err(format!(
+                "`{}` needs an equality type, but {operand:?} is not one",
+                op.symbol()
+            )),
+        };
+    }
+    let result = match (op, operand) {
+        // Arithmetic is overloaded over the two numeric types and gives back
+        // whichever it was handed; `div`/`mod` and `/` are each specific to one.
+        (BinOp::Add | BinOp::Sub | BinOp::Mul, Type::Int | Type::Real) => Some(operand.clone()),
+        (BinOp::Div | BinOp::Mod, Type::Int) => Some(Type::Int),
+        (BinOp::RealDiv, Type::Real) => Some(Type::Real),
+        (BinOp::Concat, Type::String) => Some(Type::String),
+        // The ordered types are the numeric ones plus `string`; `bool` and `unit`
+        // are comparable with `=` but have no order in SML.
+        (
+            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge,
+            Type::Int | Type::Real | Type::String,
+        ) => Some(Type::Bool),
+        _ => None,
+    };
+    result.ok_or_else(|| format!("`{}` cannot be applied to {operand:?}", op.symbol()))
+}
+
+/// Whether values of `ty` can be compared with `=` and `<>`.
+///
+/// SML calls these the *equality types*, and admits them structurally: most base
+/// types are comparable, a tuple is comparable when every component is, and a
+/// function never is — there's no way to decide whether two of them agree on
+/// every argument. `real` is excluded for a reason of its own: `nan` isn't equal
+/// to itself, so `=` on reals wouldn't be an equality at all.
+fn is_equality_type(ty: &Type) -> bool {
+    match ty {
+        Type::Int | Type::String | Type::Bool | Type::Unit => true,
+        Type::Real => false,
+        Type::Product(parts) => parts.iter().all(|part| is_equality_type(part)),
+        Type::Arrow(..) => false,
+    }
+}
+
 fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
     match &expr.kind {
         ExprKind::IntConst(_) => Ok(Type::Int),
+        ExprKind::RealConst(_) => Ok(Type::Real),
+        ExprKind::StringConst(_) => Ok(Type::String),
         ExprKind::BoolConst(_) => Ok(Type::Bool),
+        ExprKind::Unit => Ok(Type::Unit),
         // A use `resolve` found no binder for keeps the id it was minted with,
         // which nothing else shares — so it misses here, and this is where an
         // unbound identifier is reported.
@@ -31,28 +92,23 @@ fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
             .cloned()
             .ok_or_else(|| format!("Unbound identifier: {}", binder.name)),
 
-        ExprKind::Add(e1, e2)
-        | ExprKind::Sub(e1, e2)
-        | ExprKind::Mul(e1, e2)
-        | ExprKind::Div(e1, e2)
-        | ExprKind::Mod(e1, e2) => {
-            check_expr_type(env, e1, &Type::Int)?;
-            check_expr_type(env, e2, &Type::Int)?;
-            Ok(Type::Int)
+        // Both operands of a `BinOp` have the same type, whichever type that is,
+        // so the left one's is inferred and settles the overloading; the operator
+        // then gets to reject it, and the right one is checked against it.
+        ExprKind::BinOp(op, e1, e2) => {
+            let operand_type = infer_expr_type(env, e1)?;
+            let result_type = binop_result_type(*op, &operand_type)?;
+            check_expr_type(env, e2, &operand_type)?;
+            Ok(result_type)
         }
+        // `~` is overloaded over the numeric types, and like a `BinOp` it hands
+        // back whichever one it was given.
         ExprKind::Neg(e1) => {
-            check_expr_type(env, e1, &Type::Int)?;
-            Ok(Type::Int)
-        }
-        ExprKind::Eq(e1, e2)
-        | ExprKind::Ne(e1, e2)
-        | ExprKind::Lt(e1, e2)
-        | ExprKind::Le(e1, e2)
-        | ExprKind::Gt(e1, e2)
-        | ExprKind::Ge(e1, e2) => {
-            check_expr_type(env, e1, &Type::Int)?;
-            check_expr_type(env, e2, &Type::Int)?;
-            Ok(Type::Bool)
+            let operand_type = infer_expr_type(env, e1)?;
+            match operand_type {
+                Type::Int | Type::Real => Ok(operand_type),
+                _ => Err(format!("`~` cannot be applied to {operand_type:?}")),
+            }
         }
         ExprKind::AndAlso(e1, e2) | ExprKind::OrElse(e1, e2) => {
             check_expr_type(env, e1, &Type::Bool)?;
@@ -159,11 +215,25 @@ fn check_pattern_type(pattern: &Pattern, expected_type: &Type) -> Result<(), Str
                 Err(format!("Expected {expected_type:?} for int pattern"))
             }
         }
+        PatternBase::StringConst(_) => {
+            if same_type(expected_type, &Type::String) {
+                Ok(())
+            } else {
+                Err(format!("Expected {expected_type:?} for string pattern"))
+            }
+        }
         PatternBase::BoolConst(_) => {
             if same_type(expected_type, &Type::Bool) {
                 Ok(())
             } else {
                 Err(format!("Expected {expected_type:?} for bool pattern"))
+            }
+        }
+        PatternBase::Unit => {
+            if same_type(expected_type, &Type::Unit) {
+                Ok(())
+            } else {
+                Err(format!("Expected {expected_type:?} for unit pattern"))
             }
         }
         PatternBase::Var(_) | PatternBase::Wildcard => Ok(()),
@@ -203,7 +273,11 @@ fn bind_pattern(
 ) -> Result<(), String> {
     check_pattern_type(pat, ty)?;
     match &pat.pat {
-        PatternBase::Wildcard | PatternBase::IntConst(_) | PatternBase::BoolConst(_) => Ok(()),
+        PatternBase::Wildcard
+        | PatternBase::IntConst(_)
+        | PatternBase::StringConst(_)
+        | PatternBase::BoolConst(_)
+        | PatternBase::Unit => Ok(()),
         PatternBase::Var(binder) => {
             if !seen.insert(binder.name.clone()) {
                 return Err(format!(

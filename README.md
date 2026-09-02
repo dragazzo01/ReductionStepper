@@ -40,13 +40,15 @@ val z =
 ```
 
 - `val` declarations, with an optional type annotation (`val x : int = 5`) and a pattern on the left: an identifier, `_` (wildcard), a literal (matches only that exact value), or a tuple pattern `(p1, p2, ...)`, nestable.
-- ints and bools, arithmetic (`+ - * div mod ~`, with `div`/`mod` using SML's floor semantics rather than truncating), comparisons (`= <> < <= > >=`, nonassociative — `a < b < c` is a parse error, same as real SML), and short-circuiting `andalso`/`orelse`.
+- ints, bools and `unit` (one value, `()`), arithmetic (`+ - * div mod ~`, with `div`/`mod` using SML's floor semantics rather than truncating), comparisons (`< <= > >=` on ints; `=` and `<>` on any equality type, so tuples compare componentwise and functions are rejected, as in SML), and short-circuiting `andalso`/`orelse`.
 - `if e then e else e`, `let val ... in e end`, tuples `(e1, e2, ...)`.
 - `case e of p1 => e1 | p2 => e2 | ...` — pattern matching, tried top to bottom. There's no exhaustiveness checking: a value matching no arm is a runtime failure, same as an unmatched literal `val` pattern (real SML would raise `Match`/`Bind` here; this project doesn't have exceptions yet).
 
 - functions: `fn p : t => e` (the parameter type is mandatory — there's no inference engine), application, `val rec`, and `fun`, which elaborates into the `val`/`val rec` it stands for so you can watch the desugaring.
 
-Not supported (yet): lists, datatypes, exceptions, exhaustiveness checking.
+Not supported (yet): lists, datatypes, records, strings, exceptions, exhaustiveness checking.
+
+Parsing is [millet](https://github.com/azdavis/millet)'s, so the whole of Standard ML is *read* correctly and anything on that list is turned down by name — "`datatype` declarations — not supported yet" — rather than reported as a syntax error.
 
 ## How stepping works
 
@@ -60,7 +62,7 @@ Click any `fn` to fold it to `fn x => ...`, and click again to unfold it — use
 
 ```
 stepper-core/          Rust crate: parser, typechecker, stepper, renderer
-  src/frontend/         lexer + LALR grammar (lrlex/lrpar) + AST + resolver + typechecker
+  src/frontend/         AST + lowering from millet's SML parser + resolver + typechecker
   src/stepping/         one-reduction-at-a-time evaluator + next-redex finder
   src/pretty/           Doc-based pretty-printer: build -> lay out to a width -> render
   src/view.rs            display state (highlights, folds, width), held beside the program

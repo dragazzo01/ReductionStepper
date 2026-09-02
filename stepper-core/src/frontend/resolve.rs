@@ -115,24 +115,18 @@ fn resolve_cases(scopes: &mut Scopes, cases: &mut [(Pattern, Expr)]) {
 
 fn resolve_expr(scopes: &mut Scopes, expr: &mut Expr) {
     match &mut expr.kind {
-        ExprKind::IntConst(_) | ExprKind::BoolConst(_) => {}
+        ExprKind::IntConst(_)
+        | ExprKind::RealConst(_)
+        | ExprKind::StringConst(_)
+        | ExprKind::BoolConst(_)
+        | ExprKind::Unit => {}
         ExprKind::Var(binder) => {
             if let Some(id) = scopes.lookup(&binder.name) {
                 binder.id = id;
             }
         }
         ExprKind::Neg(inner) => resolve_expr(scopes, inner),
-        ExprKind::Add(l, r)
-        | ExprKind::Sub(l, r)
-        | ExprKind::Mul(l, r)
-        | ExprKind::Div(l, r)
-        | ExprKind::Mod(l, r)
-        | ExprKind::Eq(l, r)
-        | ExprKind::Ne(l, r)
-        | ExprKind::Lt(l, r)
-        | ExprKind::Le(l, r)
-        | ExprKind::Gt(l, r)
-        | ExprKind::Ge(l, r)
+        ExprKind::BinOp(_, l, r)
         | ExprKind::AndAlso(l, r)
         | ExprKind::OrElse(l, r)
         | ExprKind::App(l, r) => {

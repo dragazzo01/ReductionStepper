@@ -25,7 +25,8 @@
 use std::cell::RefCell;
 
 use stepper_core::ast::{
-    Binder, Decl, Expr as AstExpr, ExprKind, NodeId, Pattern, PatternBase, Program, Type, ValDecl,
+    BinOp, Binder, Decl, Expr as AstExpr, ExprKind, NodeId, Pattern, PatternBase, Program, Type,
+    ValDecl,
 };
 use stepper_core::view::{HighlightColor, ViewState, UNLIMITED_WIDTH};
 use stepper_core::{parse_program, pretty, stepping};
@@ -43,10 +44,21 @@ use stepper_core::{parse_program, pretty, stepping};
 /// shadows that import, and nothing in the tests uses `Expr` as a type.
 #[allow(non_snake_case)]
 pub mod expr_builders {
-    use super::{AstExpr, Decl, ExprKind, Pattern};
+    use super::{AstExpr, BinOp, Decl, ExprKind, Pattern};
 
     pub struct Expr;
 
+    /// The operators that share `ExprKind::BinOp` — spelled here as if each still
+    /// had a variant of its own.
+    macro_rules! binop {
+        ($($name:ident),* $(,)?) => {
+            $(pub fn $name(l: Box<AstExpr>, r: Box<AstExpr>) -> AstExpr {
+                AstExpr::new(ExprKind::BinOp(BinOp::$name, l, r))
+            })*
+        };
+    }
+
+    /// The two-operand kinds that kept a variant of their own.
     macro_rules! binary {
         ($($name:ident),* $(,)?) => {
             $(pub fn $name(l: Box<AstExpr>, r: Box<AstExpr>) -> AstExpr {
@@ -56,13 +68,23 @@ pub mod expr_builders {
     }
 
     impl Expr {
-        binary!(Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Le, Gt, Ge, AndAlso, OrElse, App);
+        binop!(Add, Sub, Mul, RealDiv, Div, Mod, Concat, Eq, Ne, Lt, Le, Gt, Ge);
+        binary!(AndAlso, OrElse, App);
 
         pub fn IntConst(n: i64) -> AstExpr {
             AstExpr::new(ExprKind::IntConst(n))
         }
+        pub fn RealConst(x: f64) -> AstExpr {
+            AstExpr::new(ExprKind::RealConst(x))
+        }
+        pub fn StringConst(s: &str) -> AstExpr {
+            AstExpr::new(ExprKind::StringConst(s.to_string()))
+        }
         pub fn BoolConst(b: bool) -> AstExpr {
             AstExpr::new(ExprKind::BoolConst(b))
+        }
+        pub fn Unit() -> AstExpr {
+            AstExpr::new(ExprKind::Unit)
         }
         pub fn Neg(inner: Box<AstExpr>) -> AstExpr {
             AstExpr::new(ExprKind::Neg(inner))
@@ -173,6 +195,11 @@ pub fn pat(base: PatternBase) -> Pattern {
 /// A pattern carrying a `: type` annotation.
 pub fn pat_typed(base: PatternBase, typ: Type) -> Pattern {
     Pattern::new(base, Some(typ))
+}
+
+/// The unit pattern `()`.
+pub fn punit() -> Pattern {
+    pat(PatternBase::Unit)
 }
 
 /// The unannotated variable pattern `name`.

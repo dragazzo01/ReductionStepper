@@ -61,13 +61,90 @@ fn prints_minus_div_mod() {
 }
 
 #[test]
+fn prints_unit() {
+    // Self-delimiting, so it never takes parens however deeply it's nested.
+    round_trips("val x = ()");
+    round_trips("val () = ()");
+    round_trips("val x : unit = ()");
+    round_trips("val f = fn () => 1");
+    round_trips("val p : unit * int = ((), 1)");
+    round_trips("val f : unit -> int = g");
+    // A unit *type* on the left of `->` is an atom too, unlike a product.
+    round_trips("val f : (unit -> int) -> int = g");
+}
+
+#[test]
+fn prints_strings_with_their_escapes_back() {
+    // The AST holds characters, so printing has to re-escape them — and the result
+    // has to lex back to the same characters, which is what `round_trips` checks.
+    round_trips("val s = \"hi\"");
+    round_trips("val s = \"\"");
+    round_trips("val s = \"a\\nb\\tc\"");
+    round_trips("val s = \"quote \\\" and backslash \\\\\"");
+    // Anything else unprintable goes out as its decimal character code, and a
+    // named escape in the source comes back as the canonical spelling of it.
+    prints_as("val s = \"\\007\"", "val s = \"\\007\"");
+    prints_as("val s = \"\\^G\"", "val s = \"\\007\"");
+    // A `\...\` gap is a way of writing the string, not part of it, so it doesn't
+    // come back.
+    prints_as("val s = \"one \\\n   \\two\"", "val s = \"one two\"");
+    // Above ASCII there's nothing to escape *to* — `\ddd` is a byte escape, so
+    // spelling one of these that way would print something that isn't UTF-8.
+    round_trips("val s = \"caf\u{e9} \u{1F600}\"");
+    round_trips("val s = \"a\u{85}b\"");
+}
+
+#[test]
+fn prints_concat_at_the_plus_level() {
+    round_trips("val s = a ^ b ^ c");
+    // Right-nesting at the same precedence keeps its parens, same as `+`.
+    round_trips("val s = a ^ (b ^ c)");
+    // Above the comparisons, so parens around a `^` under a `<` are redundant.
+    prints_as("val s = (a ^ b) < c", "val s = a ^ b < c");
+}
+
+#[test]
+fn prints_reals_so_they_read_back_as_the_same_value() {
+    round_trips("val r = 1.5");
+    round_trips("val r = ~2.25");
+    // Always a `.` or an `e`, so a whole-numbered real stays a real.
+    prints_as("val r = 3.0", "val r = 3.0");
+    prints_as("val r = 1e3", "val r = 1000.0");
+    prints_as("val r = 1e30", "val r = 1e30");
+    // The exponent's sign is written with `~` too.
+    prints_as("val r = 1e~7", "val r = 1e~7");
+    // The shortest spelling that reads back exactly, which for most values is not
+    // the shortest spelling that looks right.
+    prints_as("val r = 0.1", "val r = 0.1");
+    round_trips("val r = 0.30000000000000004");
+}
+
+#[test]
+fn prints_real_division_at_the_times_level() {
+    round_trips("val r = a + b / c");
+    round_trips("val r = (a + b) / c");
+    round_trips("val r = a / b / c");
+    round_trips("val r = a / (b / c)");
+}
+
+#[test]
+fn prints_the_new_types() {
+    round_trips("val s : string = x");
+    round_trips("val r : real = x");
+    round_trips("val f : string -> real = x");
+    round_trips("val p : real * string = x");
+}
+
+#[test]
 fn prints_unary_minus() {
     // Binds tighter than * and needs no parens around a bare atom.
     round_trips("val x = ~2 * 3");
     // Applied to a compound expression, it needs parens to reparse correctly.
     round_trips("val x = ~(1 + 2)");
-    // Double negation round-trips without needing parens between the two `~`s.
-    round_trips("val x = ~~5");
+    // Double negation needs the space: SML lexes the longest symbolic identifier
+    // it can, so `~~5` would come back as the identifier `~~` applied to `5`.
+    round_trips("val x = ~ ~5");
+    prints_as("val x = ~(~5)", "val x = ~ ~5");
     // SML spells negative literals with `~`, not `-`.
     assert_eq!(
         pretty_print(&vec![val(pvar("x"), Expr::IntConst(-5))]),
@@ -91,17 +168,23 @@ fn prints_if_bare_at_top_level_but_parenthesized_as_an_operand() {
 #[test]
 fn prints_comparisons() {
     round_trips("val x = 1 + 2 < 3 * 4");
-    // Nonassociative, so a comparison nested inside another keeps its parens.
-    round_trips("val x = (1 < 2) = (3 < 4)");
+    // Left-associative, all at one precedence, so parens on the left are the
+    // grouping it would have had anyway and come back off; only the right side
+    // keeps them.
+    prints_as("val x = (1 < 2) = (3 < 4)", "val x = 1 < 2 = (3 < 4)");
 }
 
 #[test]
 fn prints_andalso_orelse() {
     round_trips("val x = true andalso true andalso false");
     round_trips("val x = true orelse false andalso false");
-    // Right-associative, so unlike +, it's the LEFT side that needs parens when a
-    // same-precedence op is nested there (only reachable via explicit parens).
-    round_trips("val x = (true andalso true) andalso false");
+    // Left-associative, exactly like `+`: parens on the left say what the grouping
+    // already was, so they come off, and it's the right side that keeps them.
+    prints_as(
+        "val x = (true andalso true) andalso false",
+        "val x = true andalso true andalso false",
+    );
+    round_trips("val x = true andalso (true andalso false)");
 }
 
 #[test]
@@ -261,6 +344,9 @@ fn breaking_lines_never_changes_the_program() {
         "val x = foo (a + b) (c + d) (e + f) (g + h)",
         "val rec f : int -> int = fn n : int => if n = 0 then 1 else n * f (n - 1)",
         "val (a, b) : int * bool = (1 + 2 + 3 + 4 + 5, true andalso false)",
+        // A literal is one unbreakable token however wide it is, and a string
+        // holding a space is where that would show up if it weren't.
+        "val (s, r) : string * real = (\"a long string\" ^ \"and more\", 1.5 / 0.25)",
     ] {
         let program = parse(src);
         for width in [8, 16, 24, 40, 80] {

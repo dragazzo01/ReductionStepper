@@ -65,12 +65,17 @@
       <li>Declarations use <code>val</code>, <code>val rec</code> or <code>fun</code>.</li>
       <li>Lambdas must annotate their parameter, and <code>val rec</code> must
         annotate the whole type — there's no inference engine yet.</li>
-      <li>Expressions: int and bool constants, <code>+ - ~ * div mod</code>,
-        comparisons, <code>andalso</code>, <code>orelse</code>,
-        <code>if…then…else</code>, <code>let…in…end</code>, tuples,
-        <code>case</code>, lambdas, and application.</li>
-      <li>Patterns: int and bool constants, tuples, wildcards and identifiers —
-        in <code>val</code>, in <code>case</code> arms and as lambda parameters.</li>
+      <li>Expressions: <code>int</code>, <code>real</code>, <code>string</code>,
+        <code>bool</code> and <code>unit</code> constants,
+        <code>+ - ~ *</code> (on ints or reals), <code>div mod</code> (ints),
+        <code>/</code> (reals), <code>^</code> (strings), comparisons,
+        <code>andalso</code>, <code>orelse</code>, <code>if…then…else</code>,
+        <code>let…in…end</code>, tuples, <code>case</code>, lambdas, and
+        application.</li>
+      <li>Patterns: int, string, bool and unit constants, tuples, wildcards and
+        identifiers — in <code>val</code>, in <code>case</code> arms and as
+        lambda parameters. Not reals: SML only matches on an equality type, and
+        <code>real</code> isn't one (nor can you compare two with <code>=</code>).</li>
       <li><code>fun</code> is elaborated into <code>val</code>/<code>val rec</code>,
         so you get to watch the desugaring. Its first clause needs its argument
         types annotated (and the result type too, if it's recursive).</li>

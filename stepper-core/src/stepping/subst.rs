@@ -113,19 +113,12 @@ fn renamed_expr(expr: &Expr, renaming: &HashMap<BinderId, BinderId>) -> Expr {
     let kind = match &expr.kind {
         ExprKind::Var(binder) => ExprKind::Var(renamed_binder(binder, renaming)),
         ExprKind::IntConst(n) => ExprKind::IntConst(*n),
+        ExprKind::RealConst(x) => ExprKind::RealConst(*x),
+        ExprKind::StringConst(s) => ExprKind::StringConst(s.clone()),
         ExprKind::BoolConst(b) => ExprKind::BoolConst(*b),
-        ExprKind::Add(l, r) => ExprKind::Add(recur(l), recur(r)),
-        ExprKind::Sub(l, r) => ExprKind::Sub(recur(l), recur(r)),
-        ExprKind::Mul(l, r) => ExprKind::Mul(recur(l), recur(r)),
-        ExprKind::Div(l, r) => ExprKind::Div(recur(l), recur(r)),
-        ExprKind::Mod(l, r) => ExprKind::Mod(recur(l), recur(r)),
+        ExprKind::Unit => ExprKind::Unit,
+        ExprKind::BinOp(op, l, r) => ExprKind::BinOp(*op, recur(l), recur(r)),
         ExprKind::Neg(inner) => ExprKind::Neg(recur(inner)),
-        ExprKind::Eq(l, r) => ExprKind::Eq(recur(l), recur(r)),
-        ExprKind::Ne(l, r) => ExprKind::Ne(recur(l), recur(r)),
-        ExprKind::Lt(l, r) => ExprKind::Lt(recur(l), recur(r)),
-        ExprKind::Le(l, r) => ExprKind::Le(recur(l), recur(r)),
-        ExprKind::Gt(l, r) => ExprKind::Gt(recur(l), recur(r)),
-        ExprKind::Ge(l, r) => ExprKind::Ge(recur(l), recur(r)),
         ExprKind::AndAlso(l, r) => ExprKind::AndAlso(recur(l), recur(r)),
         ExprKind::OrElse(l, r) => ExprKind::OrElse(recur(l), recur(r)),
         ExprKind::App(f, arg) => ExprKind::App(recur(f), recur(arg)),
@@ -182,19 +175,13 @@ pub(super) fn substitute(
             }
             return expr.clone();
         }
-        ExprKind::IntConst(_) | ExprKind::BoolConst(_) => return expr.clone(),
-        ExprKind::Add(l, r) => ExprKind::Add(sub!(l), sub!(r)),
-        ExprKind::Sub(l, r) => ExprKind::Sub(sub!(l), sub!(r)),
-        ExprKind::Mul(l, r) => ExprKind::Mul(sub!(l), sub!(r)),
-        ExprKind::Div(l, r) => ExprKind::Div(sub!(l), sub!(r)),
-        ExprKind::Mod(l, r) => ExprKind::Mod(sub!(l), sub!(r)),
+        ExprKind::IntConst(_)
+        | ExprKind::RealConst(_)
+        | ExprKind::StringConst(_)
+        | ExprKind::BoolConst(_)
+        | ExprKind::Unit => return expr.clone(),
+        ExprKind::BinOp(op, l, r) => ExprKind::BinOp(*op, sub!(l), sub!(r)),
         ExprKind::Neg(inner) => ExprKind::Neg(sub!(inner)),
-        ExprKind::Eq(l, r) => ExprKind::Eq(sub!(l), sub!(r)),
-        ExprKind::Ne(l, r) => ExprKind::Ne(sub!(l), sub!(r)),
-        ExprKind::Lt(l, r) => ExprKind::Lt(sub!(l), sub!(r)),
-        ExprKind::Le(l, r) => ExprKind::Le(sub!(l), sub!(r)),
-        ExprKind::Gt(l, r) => ExprKind::Gt(sub!(l), sub!(r)),
-        ExprKind::Ge(l, r) => ExprKind::Ge(sub!(l), sub!(r)),
         ExprKind::AndAlso(l, r) => ExprKind::AndAlso(sub!(l), sub!(r)),
         ExprKind::OrElse(l, r) => ExprKind::OrElse(sub!(l), sub!(r)),
         ExprKind::App(f, arg) => ExprKind::App(sub!(f), sub!(arg)),
@@ -278,12 +265,21 @@ pub(super) fn substitute_into_decls(
 pub(super) fn try_match(pat: &Pattern, value: &Expr) -> Option<Vec<(BinderId, Expr)>> {
     match &pat.pat {
         PatternBase::Wildcard => Some(Vec::new()),
+        // One value inhabits `unit`, so this matches whatever it meets, and
+        // binds nothing.
+        PatternBase::Unit => Some(Vec::new()),
         PatternBase::Var(binder) => Some(vec![(binder.id, value.clone())]),
         PatternBase::IntConst(n) => {
             let ExprKind::IntConst(v) = &value.kind else {
                 unreachable!("typechecked: IntConst pattern only meets an int")
             };
             (v == n).then(Vec::new)
+        }
+        PatternBase::StringConst(s) => {
+            let ExprKind::StringConst(v) = &value.kind else {
+                unreachable!("typechecked: StringConst pattern only meets a string")
+            };
+            (v == s).then(Vec::new)
         }
         PatternBase::BoolConst(b) => {
             let ExprKind::BoolConst(v) = &value.kind else {

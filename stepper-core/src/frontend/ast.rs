@@ -97,10 +97,102 @@ impl PartialEq for Binder {
     }
 }
 
+/// A binary operator whose two operands are simply reduced, left to right, and
+/// then combined. Every such operator shares one `ExprKind`, one typing rule and
+/// one reduction rule; all that distinguishes them is the spelling, the
+/// precedence and the arithmetic, each looked up by the module that cares.
+///
+/// `andalso`/`orelse` are deliberately *not* here: they short-circuit, so their
+/// right operand may never be evaluated at all, and neither is `~`, which is
+/// unary and atomic in the grammar.
+///
+/// Several of these are *overloaded* in SML rather than being one operation:
+/// `+` adds two ints or two reals, and `<` compares two of either or two
+/// strings. Overloading is a typing question, not a syntactic one, so it lives
+/// entirely in `typecheck::binop_result_type` and `eval::apply_binop` — there is
+/// still exactly one `BinOp::Add`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    /// `/`, real division. `div` is the int one — SML spells them differently
+    /// because they are different operators, not two overloadings of one.
+    RealDiv,
+    Div,
+    Mod,
+    /// `^`, string concatenation.
+    Concat,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl BinOp {
+    /// Every operator, which is what makes `from_symbol` the exact inverse of
+    /// `symbol` without a second list of spellings to keep in step.
+    pub const ALL: [BinOp; 13] = [
+        BinOp::Add,
+        BinOp::Sub,
+        BinOp::Mul,
+        BinOp::RealDiv,
+        BinOp::Div,
+        BinOp::Mod,
+        BinOp::Concat,
+        BinOp::Eq,
+        BinOp::Ne,
+        BinOp::Lt,
+        BinOp::Le,
+        BinOp::Gt,
+        BinOp::Ge,
+    ];
+
+    /// The operator SML spells `symbol`, if it is one this crate evaluates.
+    /// `frontend::lower` needs this because millet's parser reports an infix
+    /// operator by *name*: it has already grouped the expression by precedence,
+    /// user-declared `infix` operators included, and leaves deciding what a name
+    /// means to whoever consumes the tree.
+    pub fn from_symbol(symbol: &str) -> Option<BinOp> {
+        BinOp::ALL.into_iter().find(|op| op.symbol() == symbol)
+    }
+
+    /// How SML spells this operator. Lives here rather than in `pretty` because
+    /// the stepper's messages need it too, and there is exactly one right answer.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::RealDiv => "/",
+            BinOp::Div => "div",
+            BinOp::Mod => "mod",
+            BinOp::Concat => "^",
+            BinOp::Eq => "=",
+            BinOp::Ne => "<>",
+            BinOp::Lt => "<",
+            BinOp::Le => "<=",
+            BinOp::Gt => ">",
+            BinOp::Ge => ">=",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Int,
+    Real,
+    String,
     Bool,
+    /// The type of `()`, whose one value carries no information.
+    ///
+    /// In SML this is the empty record, and so the 0-ary case of `Product` —
+    /// but tuples here are always two or more (one is just parens, and `Product`
+    /// prints by joining with `*`), so spelling it out keeps that invariant and
+    /// costs one match arm wherever `Unit` is genuinely different from a tuple.
+    Unit,
     Product(Vec<Box<Type>>),
     Arrow(Box<Type>, Box<Type>),
 }
@@ -145,25 +237,26 @@ impl Expr {
     pub fn var(binder: Binder) -> Expr {
         Expr::new(ExprKind::Var(binder))
     }
+
+    pub fn binop(op: BinOp, l: Expr, r: Expr) -> Expr {
+        Expr::new(ExprKind::BinOp(op, Box::new(l), Box::new(r)))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
     IntConst(i64),
+    /// A real literal. `f64`, so `PartialEq` on it is IEEE equality and `nan`
+    /// is unequal to itself — which is exactly why `real` isn't one of SML's
+    /// equality types, and so never reaches `eval::values_equal`.
+    RealConst(f64),
+    StringConst(String),
     BoolConst(bool),
+    /// `()`. A value, like the other constants — see `Type::Unit`.
+    Unit,
     Var(Binder),
-    Add(Box<Expr>, Box<Expr>),
-    Sub(Box<Expr>, Box<Expr>),
-    Mul(Box<Expr>, Box<Expr>),
-    Div(Box<Expr>, Box<Expr>),
-    Mod(Box<Expr>, Box<Expr>),
+    BinOp(BinOp, Box<Expr>, Box<Expr>),
     Neg(Box<Expr>),
-    Eq(Box<Expr>, Box<Expr>),
-    Ne(Box<Expr>, Box<Expr>),
-    Lt(Box<Expr>, Box<Expr>),
-    Le(Box<Expr>, Box<Expr>),
-    Gt(Box<Expr>, Box<Expr>),
-    Ge(Box<Expr>, Box<Expr>),
     AndAlso(Box<Expr>, Box<Expr>),
     OrElse(Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
@@ -203,28 +296,39 @@ impl Pattern {
         Pattern::new(pat, None)
     }
 
-    /// The type this pattern states outright, if it states one — either as its own
-    /// `: type` annotation or, for a tuple whose every component states one, as the
-    /// product of those. Nothing else is derivable: an unannotated variable or a
-    /// wildcard could stand for anything, and a literal's type (`0 : int`) is only
-    /// *checked*, never a declaration, since a `fn`'s parameter type must come from
-    /// something the programmer wrote rather than from a pattern that happens to be
-    /// a literal.
+    /// The type this pattern states outright, if it states one — its own `: type`
+    /// annotation, or a type the pattern itself can only have. An unannotated
+    /// variable or a wildcard could stand for anything, and a literal's type
+    /// (`0 : int`) is only *checked*, never a declaration, since a `fn`'s parameter
+    /// type should come from something the programmer wrote rather than from a
+    /// pattern that happens to be a literal.
     ///
     /// This is what lets `fn (x : int, y : bool) => ...` and its `fun` spelling be
     /// accepted without repeating the type: annotating the components says the same
     /// thing as annotating the whole.
+    ///
+    /// `()` is the one pattern that declares a type without being annotated, and
+    /// it isn't an exception to the rule above so much as the degenerate case of
+    /// it: `unit` has a single value, so a `()` pattern cannot have any other
+    /// type, and there is nothing for the programmer to have chosen. Without this,
+    /// SML's most ordinary use of unit — `fn () => e` — would have to be written
+    /// `fn () : unit => e`.
     pub fn declared_type(&self) -> Option<Type> {
         if let Some(typ) = &self.typ {
             return Some(typ.clone());
         }
         match &self.pat {
+            PatternBase::Unit => Some(Type::Unit),
             PatternBase::Tuple(pats) => pats
                 .iter()
                 .map(|p| p.declared_type().map(Box::new))
                 .collect::<Option<Vec<_>>>()
                 .map(Type::Product),
-            _ => None,
+            PatternBase::Var(_)
+            | PatternBase::Wildcard
+            | PatternBase::IntConst(_)
+            | PatternBase::StringConst(_)
+            | PatternBase::BoolConst(_) => None,
         }
     }
 
@@ -238,7 +342,11 @@ impl Pattern {
     fn collect_binders<'a>(&'a self, out: &mut Vec<&'a Binder>) {
         match &self.pat {
             PatternBase::Var(binder) => out.push(binder),
-            PatternBase::Wildcard | PatternBase::IntConst(_) | PatternBase::BoolConst(_) => {}
+            PatternBase::Wildcard
+            | PatternBase::IntConst(_)
+            | PatternBase::StringConst(_)
+            | PatternBase::BoolConst(_)
+            | PatternBase::Unit => {}
             PatternBase::Tuple(pats) => pats.iter().for_each(|p| p.collect_binders(out)),
         }
     }
@@ -249,7 +357,13 @@ pub enum PatternBase {
     Var(Binder),
     Wildcard,
     IntConst(i64),
+    /// A string literal pattern. There is deliberately no *real* one: SML only
+    /// admits constants of an equality type in a pattern, and `real` isn't one
+    /// (see `ExprKind::RealConst`), so `frontend::lower` rejects it outright.
+    StringConst(String),
     BoolConst(bool),
+    /// `()`, which matches the one value of `Type::Unit` and binds nothing.
+    Unit,
     Tuple(Vec<Pattern>),
 }
 
@@ -306,19 +420,14 @@ pub fn walk_exprs(program: &Program, f: &mut impl FnMut(&Expr)) {
 pub fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
     f(expr);
     match &expr.kind {
-        ExprKind::IntConst(_) | ExprKind::BoolConst(_) | ExprKind::Var(_) => {}
+        ExprKind::IntConst(_)
+        | ExprKind::RealConst(_)
+        | ExprKind::StringConst(_)
+        | ExprKind::BoolConst(_)
+        | ExprKind::Unit
+        | ExprKind::Var(_) => {}
         ExprKind::Neg(inner) => walk_expr(inner, f),
-        ExprKind::Add(l, r)
-        | ExprKind::Sub(l, r)
-        | ExprKind::Mul(l, r)
-        | ExprKind::Div(l, r)
-        | ExprKind::Mod(l, r)
-        | ExprKind::Eq(l, r)
-        | ExprKind::Ne(l, r)
-        | ExprKind::Lt(l, r)
-        | ExprKind::Le(l, r)
-        | ExprKind::Gt(l, r)
-        | ExprKind::Ge(l, r)
+        ExprKind::BinOp(_, l, r)
         | ExprKind::AndAlso(l, r)
         | ExprKind::OrElse(l, r)
         | ExprKind::App(l, r) => {

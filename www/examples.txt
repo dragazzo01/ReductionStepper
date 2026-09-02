@@ -19,9 +19,14 @@ val quick = true orelse 1 < 2
 val result = let val a = 1 + 2 val b = a * a in let val c = b + a in c * 2 end end
 
 # Pattern matching with case
-val classify = fn n : int => case n of 0 => 0 | 1 => 10 | m => m * 100
+fun classify (n : int) = case n of 0 => 0 | 1 => 10 | m => m * 100
 val a = classify 1
 val b = classify 7
+
+# Unit
+val f = fn () => 6 * 7
+val answer = f ()
+val () = ()
 
 # Lambdas and application
 val twice = fn f : int -> int => fn x : int => f (f x)
@@ -34,7 +39,8 @@ val inc = add 1
 val a = inc 41
 
 # Recursion: factorial
-val rec fact : int -> int = fn 0 : int => 1 | n => n * fact (n - 1)
+fun fact (0 : int) : int = 1 
+  | fact n = n * fact (n - 1)
 val x = fact 5
 
 # fun with several clauses
@@ -44,10 +50,24 @@ fun fib (0 : int) : int = 1
 val x = fib 5
 
 # A recursive function worth folding away
-val rec sumTo : int -> int = fn 0 : int => 0 | n => n + sumTo (n - 1)
+fun sumTo (0 : int) : int = 0 
+  | sumTo n = n + sumTo (n - 1)
 val total = sumTo 6
 
 # Continuation-passing style
 fun factCPS (0 : int) (k : int -> int) : int = k 1
   | factCPS x k = factCPS (x - 1) (fn res : int => k (x * res))
 val answer = factCPS 4 (fn x : int => x)
+
+# Strings and string patterns
+fun greet ("hi" : string) : string = "hello there"
+  | greet name = "hello, " ^ name ^ "!"
+val a = greet "hi"
+val b = greet "world"
+val same = a = b
+
+# Reals: overloaded arithmetic, and the division that isn't div
+fun average (x : real, y : real) : real = (x + y) / 2.0
+val mid = average (1.5, 4.0)
+val big = mid > 2.0
+val neg = ~mid
