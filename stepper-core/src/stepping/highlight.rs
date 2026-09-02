@@ -39,17 +39,7 @@ fn highlight_next_expr(expr: &Expr) -> Option<NodeId> {
         // Mirrors `step_var`: a variable is only a redex when it names a
         // recursive function waiting to be unrolled.
         ExprKind::Var(binder) => lookup_rec(binder.id).map(|_| expr.id),
-        ExprKind::Add(l, r)
-        | ExprKind::Sub(l, r)
-        | ExprKind::Mul(l, r)
-        | ExprKind::Div(l, r)
-        | ExprKind::Mod(l, r)
-        | ExprKind::Eq(l, r)
-        | ExprKind::Ne(l, r)
-        | ExprKind::Lt(l, r)
-        | ExprKind::Le(l, r)
-        | ExprKind::Gt(l, r)
-        | ExprKind::Ge(l, r) => highlight_next_binop(expr, l, r),
+        ExprKind::BinOp(_, l, r) => highlight_next_binop(expr, l, r),
         ExprKind::Neg(inner) => highlight_next_unary(expr, inner),
         // `andalso`/`orelse` only need their left operand to be a value before
         // firing (`r` is never inspected), unlike a binop which waits for both —

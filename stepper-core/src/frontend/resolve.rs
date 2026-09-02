@@ -122,17 +122,7 @@ fn resolve_expr(scopes: &mut Scopes, expr: &mut Expr) {
             }
         }
         ExprKind::Neg(inner) => resolve_expr(scopes, inner),
-        ExprKind::Add(l, r)
-        | ExprKind::Sub(l, r)
-        | ExprKind::Mul(l, r)
-        | ExprKind::Div(l, r)
-        | ExprKind::Mod(l, r)
-        | ExprKind::Eq(l, r)
-        | ExprKind::Ne(l, r)
-        | ExprKind::Lt(l, r)
-        | ExprKind::Le(l, r)
-        | ExprKind::Gt(l, r)
-        | ExprKind::Ge(l, r)
+        ExprKind::BinOp(_, l, r)
         | ExprKind::AndAlso(l, r)
         | ExprKind::OrElse(l, r)
         | ExprKind::App(l, r) => {

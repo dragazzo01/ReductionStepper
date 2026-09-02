@@ -17,7 +17,7 @@
 //! time, because folding one changes its width and therefore the line-breaking of
 //! every group around it.
 
-use crate::ast::{Decl, Expr, ExprKind, Pattern, PatternBase, Program, Type, ValDecl};
+use crate::ast::{BinOp, Decl, Expr, ExprKind, Pattern, PatternBase, Program, Type, ValDecl};
 use crate::view::ViewState;
 
 use super::doc::{Ann, Doc};
@@ -217,19 +217,13 @@ fn expr_body(expr: &Expr, min_prec: u8, view: &ViewState) -> Doc {
         ExprKind::IntConst(n) => lit(format_int(*n)),
         ExprKind::BoolConst(b) => lit(b.to_string()),
         ExprKind::Var(binder) => var(&binder.name),
-        ExprKind::OrElse(l, r) => binop_doc(l, r, "orelse", 1, 2, 1, min_prec, view),
-        ExprKind::AndAlso(l, r) => binop_doc(l, r, "andalso", 2, 3, 2, min_prec, view),
-        ExprKind::Eq(l, r) => binop_doc(l, r, "=", 3, 4, 4, min_prec, view),
-        ExprKind::Ne(l, r) => binop_doc(l, r, "<>", 3, 4, 4, min_prec, view),
-        ExprKind::Lt(l, r) => binop_doc(l, r, "<", 3, 4, 4, min_prec, view),
-        ExprKind::Le(l, r) => binop_doc(l, r, "<=", 3, 4, 4, min_prec, view),
-        ExprKind::Gt(l, r) => binop_doc(l, r, ">", 3, 4, 4, min_prec, view),
-        ExprKind::Ge(l, r) => binop_doc(l, r, ">=", 3, 4, 4, min_prec, view),
-        ExprKind::Add(l, r) => binop_doc(l, r, "+", 4, 4, 5, min_prec, view),
-        ExprKind::Sub(l, r) => binop_doc(l, r, "-", 4, 4, 5, min_prec, view),
-        ExprKind::Mul(l, r) => binop_doc(l, r, "*", 5, 5, 6, min_prec, view),
-        ExprKind::Div(l, r) => binop_doc(l, r, "div", 5, 5, 6, min_prec, view),
-        ExprKind::Mod(l, r) => binop_doc(l, r, "mod", 5, 5, 6, min_prec, view),
+        // Right-associative, so the mirror image of the left-associative shape
+        // `binop_prec` gives the arithmetic operators.
+        ExprKind::OrElse(l, r) => binop_doc(l, r, "orelse", (1, 2, 1), min_prec, view),
+        ExprKind::AndAlso(l, r) => binop_doc(l, r, "andalso", (2, 3, 2), min_prec, view),
+        ExprKind::BinOp(op, l, r) => {
+            binop_doc(l, r, op.symbol(), binop_prec(*op), min_prec, view)
+        }
         // Atomic, matching the grammar's `AtomicExpr -> '~' AtomicExpr`: its
         // operand is an atom, so anything compound — an application included —
         // takes parens (`~(f x)`), while `~~5` and `~x` stay bare. Never broken:
@@ -469,14 +463,25 @@ fn collapsed_lambda_doc(cases: &[(Pattern, Expr)], view: &ViewState) -> Doc {
     ])
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Where each [`BinOp`] sits on the ladder, as `(own, left_min, right_min)`.
+///
+/// The arithmetic operators are left-associative, so the left child accepts the
+/// operator's own precedence and the right child needs one more; the comparisons
+/// are nonassociative (the grammar rejects `a < b < c`), so *both* children need
+/// one more. This has to mirror `grammar.y`'s precedence block.
+fn binop_prec(op: BinOp) -> (u8, u8, u8) {
+    match op {
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => (3, 4, 4),
+        BinOp::Add | BinOp::Sub => (4, 4, 5),
+        BinOp::Mul | BinOp::Div | BinOp::Mod => (5, 5, 6),
+    }
+}
+
 fn binop_doc(
     l: &Expr,
     r: &Expr,
     operator: &str,
-    own_prec: u8,
-    left_min: u8,
-    right_min: u8,
+    (own_prec, left_min, right_min): (u8, u8, u8),
     min_prec: u8,
     view: &ViewState,
 ) -> Doc {

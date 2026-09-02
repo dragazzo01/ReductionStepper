@@ -256,17 +256,7 @@ fn collect_names(expr: &Expr, out: &mut HashSet<String>) {
             out.insert(binder.name.clone());
         }
         ExprKind::Neg(inner) => collect_names(inner, out),
-        ExprKind::Add(l, r)
-        | ExprKind::Sub(l, r)
-        | ExprKind::Mul(l, r)
-        | ExprKind::Div(l, r)
-        | ExprKind::Mod(l, r)
-        | ExprKind::Eq(l, r)
-        | ExprKind::Ne(l, r)
-        | ExprKind::Lt(l, r)
-        | ExprKind::Le(l, r)
-        | ExprKind::Gt(l, r)
-        | ExprKind::Ge(l, r)
+        ExprKind::BinOp(_, l, r)
         | ExprKind::AndAlso(l, r)
         | ExprKind::OrElse(l, r)
         | ExprKind::App(l, r) => {

@@ -3,3 +3,4 @@
 /.deploy
 todo.txt
 Cargo.lock
+.claude/

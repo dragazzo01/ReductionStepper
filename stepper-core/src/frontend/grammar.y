@@ -139,17 +139,17 @@ TypeProduct -> Vec<Box<Type>>:
     ;
 
 Expr -> Expr:
-      Expr '+' Expr { Expr::new(ExprKind::Add(Box::new($1), Box::new($3))) }
-    | Expr '-' Expr { Expr::new(ExprKind::Sub(Box::new($1), Box::new($3))) }
-    | Expr '*' Expr { Expr::new(ExprKind::Mul(Box::new($1), Box::new($3))) }
-    | Expr 'DIV' Expr { Expr::new(ExprKind::Div(Box::new($1), Box::new($3))) }
-    | Expr 'MOD' Expr { Expr::new(ExprKind::Mod(Box::new($1), Box::new($3))) }
-    | Expr '=' Expr { Expr::new(ExprKind::Eq(Box::new($1), Box::new($3))) }
-    | Expr '<>' Expr { Expr::new(ExprKind::Ne(Box::new($1), Box::new($3))) }
-    | Expr '<' Expr { Expr::new(ExprKind::Lt(Box::new($1), Box::new($3))) }
-    | Expr '<=' Expr { Expr::new(ExprKind::Le(Box::new($1), Box::new($3))) }
-    | Expr '>' Expr { Expr::new(ExprKind::Gt(Box::new($1), Box::new($3))) }
-    | Expr '>=' Expr { Expr::new(ExprKind::Ge(Box::new($1), Box::new($3))) }
+      Expr '+' Expr { Expr::binop(BinOp::Add, $1, $3) }
+    | Expr '-' Expr { Expr::binop(BinOp::Sub, $1, $3) }
+    | Expr '*' Expr { Expr::binop(BinOp::Mul, $1, $3) }
+    | Expr 'DIV' Expr { Expr::binop(BinOp::Div, $1, $3) }
+    | Expr 'MOD' Expr { Expr::binop(BinOp::Mod, $1, $3) }
+    | Expr '=' Expr { Expr::binop(BinOp::Eq, $1, $3) }
+    | Expr '<>' Expr { Expr::binop(BinOp::Ne, $1, $3) }
+    | Expr '<' Expr { Expr::binop(BinOp::Lt, $1, $3) }
+    | Expr '<=' Expr { Expr::binop(BinOp::Le, $1, $3) }
+    | Expr '>' Expr { Expr::binop(BinOp::Gt, $1, $3) }
+    | Expr '>=' Expr { Expr::binop(BinOp::Ge, $1, $3) }
     | Expr 'ANDALSO' Expr { Expr::new(ExprKind::AndAlso(Box::new($1), Box::new($3))) }
     | Expr 'ORELSE' Expr { Expr::new(ExprKind::OrElse(Box::new($1), Box::new($3))) }
     | 'IF' Expr 'THEN' Expr 'ELSE' Expr
@@ -227,5 +227,5 @@ MatchArms -> Vec<(Pattern, Expr)>:
     | MatchArms '|' Pattern '=>' Expr { let mut v = $1; v.push(($3, $5)); v }
     ;
 %%
-use super::ast::{Binder, Decl, Expr, ExprKind, Pattern, PatternBase, Type, ValDecl};
+use super::ast::{BinOp, Binder, Decl, Expr, ExprKind, Pattern, PatternBase, Type, ValDecl};
 use super::elaborate::{fun_decl, FunClause};

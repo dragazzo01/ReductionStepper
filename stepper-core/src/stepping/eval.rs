@@ -1,4 +1,6 @@
-use crate::ast::{Binder, BinderId, Decl, Expr, ExprKind, NodeId, Pattern, Program, ValDecl};
+use crate::ast::{
+    BinOp, Binder, BinderId, Decl, Expr, ExprKind, NodeId, Pattern, Program, ValDecl,
+};
 use crate::pretty::{pretty_print_expr, pretty_print_pattern};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -109,34 +111,8 @@ fn step_expr(expr: &Expr) -> Option<Step> {
     match &expr.kind {
         ExprKind::IntConst(_) | ExprKind::BoolConst(_) | ExprKind::Lambda(..) => None,
         ExprKind::Var(binder) => step_var(binder),
-        ExprKind::Add(l, r) => step_binop(expr, l, r, ExprKind::Add, |a, b| ExprKind::IntConst(a + b), "+"),
-        ExprKind::Sub(l, r) => step_binop(expr, l, r, ExprKind::Sub, |a, b| ExprKind::IntConst(a - b), "-"),
-        ExprKind::Mul(l, r) => step_binop(expr, l, r, ExprKind::Mul, |a, b| ExprKind::IntConst(a * b), "*"),
-        // b == 0 should raise SML's `Div` exception; until exceptions exist
-        // (see view::HighlightColor::Red) this falls back to 0 rather than panicking.
-        ExprKind::Div(l, r) => step_binop(
-            expr,
-            l,
-            r,
-            ExprKind::Div,
-            |a, b| ExprKind::IntConst(if b == 0 { 0 } else { div_floor(a, b) }),
-            "div",
-        ),
-        ExprKind::Mod(l, r) => step_binop(
-            expr,
-            l,
-            r,
-            ExprKind::Mod,
-            |a, b| ExprKind::IntConst(if b == 0 { 0 } else { mod_floor(a, b) }),
-            "mod",
-        ),
+        ExprKind::BinOp(op, l, r) => step_binop(expr, *op, l, r),
         ExprKind::Neg(inner) => step_neg(expr, inner),
-        ExprKind::Eq(l, r) => step_binop(expr, l, r, ExprKind::Eq, |a, b| ExprKind::BoolConst(a == b), "="),
-        ExprKind::Ne(l, r) => step_binop(expr, l, r, ExprKind::Ne, |a, b| ExprKind::BoolConst(a != b), "<>"),
-        ExprKind::Lt(l, r) => step_binop(expr, l, r, ExprKind::Lt, |a, b| ExprKind::BoolConst(a < b), "<"),
-        ExprKind::Le(l, r) => step_binop(expr, l, r, ExprKind::Le, |a, b| ExprKind::BoolConst(a <= b), "<="),
-        ExprKind::Gt(l, r) => step_binop(expr, l, r, ExprKind::Gt, |a, b| ExprKind::BoolConst(a > b), ">"),
-        ExprKind::Ge(l, r) => step_binop(expr, l, r, ExprKind::Ge, |a, b| ExprKind::BoolConst(a >= b), ">="),
         ExprKind::AndAlso(l, r) => step_shortcircuit(
             expr,
             l,
@@ -483,41 +459,61 @@ fn step_app(whole: &Expr, f: &Expr, arg: &Expr) -> Option<Step> {
     step_match(whole, arg, cases)
 }
 
-fn step_binop(
-    whole: &Expr,
-    l: &Expr,
-    r: &Expr,
-    rebuild: fn(Box<Expr>, Box<Expr>) -> ExprKind,
-    apply: fn(i64, i64) -> ExprKind,
-    op: &str,
-) -> Option<Step> {
+/// The one reduction rule every [`BinOp`] shares: reduce `l`, then `r`, then
+/// combine the two ints with [`apply_binop`].
+fn step_binop(whole: &Expr, op: BinOp, l: &Expr, r: &Expr) -> Option<Step> {
     if !is_value(l) {
         let step = step_expr(l)?;
-        return Some(step.wrap(whole, |new_l| rebuild(new_l, Box::new(r.clone()))));
+        return Some(step.wrap(whole, |new_l| {
+            ExprKind::BinOp(op, new_l, Box::new(r.clone()))
+        }));
     }
     if !is_value(r) {
         let step = step_expr(r)?;
-        return Some(step.wrap(whole, |new_r| rebuild(Box::new(l.clone()), new_r)));
+        return Some(step.wrap(whole, |new_r| {
+            ExprKind::BinOp(op, Box::new(l.clone()), new_r)
+        }));
     }
 
     // The typechecker has already ruled this out, but a non-int operand here is a
     // genuine type error — panic rather than pretend to make progress.
     let (ExprKind::IntConst(a), ExprKind::IntConst(b)) = (&l.kind, &r.kind) else {
         panic!(
-            "type error: `{op}` expects two ints, got `{}` and `{}`",
+            "type error: `{}` expects two ints, got `{}` and `{}`",
+            op.symbol(),
             pretty_print_expr(l),
             pretty_print_expr(r)
         );
     };
-    let result = whole.same_id(apply(*a, *b));
+    let result = whole.same_id(apply_binop(op, *a, *b));
     let message = format!(
         "Evaluated {} {} {} to {}",
         pretty_print_expr(l),
-        op,
+        op.symbol(),
         pretty_print_expr(r),
         pretty_print_expr(&result)
     );
     Some(Step::plain(result, message))
+}
+
+/// What each operator actually computes, once both operands are ints.
+///
+/// A zero divisor should raise SML's `Div` exception; until exceptions exist (see
+/// `view::HighlightColor::Red`) `div`/`mod` fall back to 0 rather than panicking.
+fn apply_binop(op: BinOp, a: i64, b: i64) -> ExprKind {
+    match op {
+        BinOp::Add => ExprKind::IntConst(a + b),
+        BinOp::Sub => ExprKind::IntConst(a - b),
+        BinOp::Mul => ExprKind::IntConst(a * b),
+        BinOp::Div => ExprKind::IntConst(if b == 0 { 0 } else { div_floor(a, b) }),
+        BinOp::Mod => ExprKind::IntConst(if b == 0 { 0 } else { mod_floor(a, b) }),
+        BinOp::Eq => ExprKind::BoolConst(a == b),
+        BinOp::Ne => ExprKind::BoolConst(a != b),
+        BinOp::Lt => ExprKind::BoolConst(a < b),
+        BinOp::Le => ExprKind::BoolConst(a <= b),
+        BinOp::Gt => ExprKind::BoolConst(a > b),
+        BinOp::Ge => ExprKind::BoolConst(a >= b),
+    }
 }
 
 /// Perform one reduction step on the whole program. Returns `None` once the program
