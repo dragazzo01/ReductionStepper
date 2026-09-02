@@ -19,11 +19,7 @@ val quick = true orelse 1 < 2
 val result = let val a = 1 + 2 val b = a * a in let val c = b + a in c * 2 end end
 
 # Pattern matching with case
-<<<<<<< HEAD
-fun (n : int) = case n of 0 => 0 | 1 => 10 | m => m * 100
-=======
 fun classify (n : int) = case n of 0 => 0 | 1 => 10 | m => m * 100
->>>>>>> worktree-millet-parser
 val a = classify 1
 val b = classify 7
 
