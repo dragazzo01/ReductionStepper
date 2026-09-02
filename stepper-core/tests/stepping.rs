@@ -55,6 +55,38 @@ fn a_unit_pattern_matches_and_binds_nothing() {
 }
 
 #[test]
+fn compares_values_of_any_equality_type() {
+    assert_eq!(run("val b = true = true"), "val b = true");
+    assert_eq!(run("val b = true = false"), "val b = false");
+    assert_eq!(run("val b = true <> false"), "val b = true");
+    // One value inhabits unit, so these are equal by construction.
+    assert_eq!(run("val b = () = ()"), "val b = true");
+    assert_eq!(run("val b = () <> ()"), "val b = false");
+}
+
+#[test]
+fn compares_tuples_componentwise() {
+    assert_eq!(run("val b = (1, true) = (1, true)"), "val b = true");
+    assert_eq!(run("val b = (1, true) = (1, false)"), "val b = false");
+    assert_eq!(run("val b = (1, (2, ())) = (1, (2, ()))"), "val b = true");
+    assert_eq!(run("val b = (1, (2, ())) <> (1, (3, ()))"), "val b = true");
+}
+
+#[test]
+fn a_comparison_reduces_both_sides_first() {
+    // Same left-then-right order as arithmetic: three steps, not one.
+    let program = parse("val b = (1 + 1, true) = (2, 1 < 2)");
+
+    let (program, msg) = step_once(&program);
+    assert_eq!(msg, "Evaluated 1 + 1 to 2");
+    let (program, msg) = step_once(&program);
+    assert_eq!(msg, "Evaluated 1 < 2 to true");
+    let (program, msg) = step_once(&program);
+    assert_eq!(msg, "Evaluated (2, true) = (2, true) to true");
+    assert_eq!(show(&program), "val b = true");
+}
+
+#[test]
 fn reduces_unary_minus() {
     // A negative literal is already a value: nothing to step.
     assert_eq!(run("val x = ~5"), "val x = ~5");

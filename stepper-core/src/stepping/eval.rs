@@ -490,17 +490,7 @@ fn step_binop(whole: &Expr, op: BinOp, l: &Expr, r: &Expr) -> Option<Step> {
         }));
     }
 
-    // The typechecker has already ruled this out, but a non-int operand here is a
-    // genuine type error — panic rather than pretend to make progress.
-    let (ExprKind::IntConst(a), ExprKind::IntConst(b)) = (&l.kind, &r.kind) else {
-        panic!(
-            "type error: `{}` expects two ints, got `{}` and `{}`",
-            op.symbol(),
-            pretty_print_expr(l),
-            pretty_print_expr(r)
-        );
-    };
-    let result = whole.same_id(apply_binop(op, *a, *b));
+    let result = whole.same_id(apply_binop(op, l, r));
     let message = format!(
         "Evaluated {} {} {} to {}",
         pretty_print_expr(l),
@@ -515,19 +505,64 @@ fn step_binop(whole: &Expr, op: BinOp, l: &Expr, r: &Expr) -> Option<Step> {
 ///
 /// A zero divisor should raise SML's `Div` exception; until exceptions exist (see
 /// `view::HighlightColor::Red`) `div`/`mod` fall back to 0 rather than panicking.
-fn apply_binop(op: BinOp, a: i64, b: i64) -> ExprKind {
+/// Combines two already-reduced operands. `step_binop` has established that both
+/// are values; what they're allowed to *be* is the typechecker's business.
+fn apply_binop(op: BinOp, l: &Expr, r: &Expr) -> ExprKind {
+    // `=` and `<>` are the two that look at whole values rather than ints: they
+    // work on any equality type (`typecheck::is_equality_type`), which is also
+    // what guarantees `values_equal` never meets a function.
+    if let BinOp::Eq | BinOp::Ne = op {
+        let equal = values_equal(l, r);
+        return ExprKind::BoolConst(if op == BinOp::Eq { equal } else { !equal });
+    }
+    // The typechecker has already ruled this out, but a non-int operand here is a
+    // genuine type error — panic rather than pretend to make progress.
+    let (ExprKind::IntConst(a), ExprKind::IntConst(b)) = (&l.kind, &r.kind) else {
+        panic!(
+            "type error: `{}` expects two ints, got `{}` and `{}`",
+            op.symbol(),
+            pretty_print_expr(l),
+            pretty_print_expr(r)
+        );
+    };
+    apply_int_binop(op, *a, *b)
+}
+
+/// The nine operators whose operands really are two ints.
+fn apply_int_binop(op: BinOp, a: i64, b: i64) -> ExprKind {
     match op {
         BinOp::Add => ExprKind::IntConst(a + b),
         BinOp::Sub => ExprKind::IntConst(a - b),
         BinOp::Mul => ExprKind::IntConst(a * b),
         BinOp::Div => ExprKind::IntConst(if b == 0 { 0 } else { div_floor(a, b) }),
         BinOp::Mod => ExprKind::IntConst(if b == 0 { 0 } else { mod_floor(a, b) }),
-        BinOp::Eq => ExprKind::BoolConst(a == b),
-        BinOp::Ne => ExprKind::BoolConst(a != b),
         BinOp::Lt => ExprKind::BoolConst(a < b),
         BinOp::Le => ExprKind::BoolConst(a <= b),
         BinOp::Gt => ExprKind::BoolConst(a > b),
         BinOp::Ge => ExprKind::BoolConst(a >= b),
+        BinOp::Eq | BinOp::Ne => unreachable!("handled in apply_binop"),
+    }
+}
+
+/// Structural equality on two values, which is what SML's `=` means.
+///
+/// Only reached for an equality type, so the two sides always have the same shape
+/// and a function never turns up — `typecheck::is_equality_type` rejects both
+/// possibilities before a program gets here.
+fn values_equal(l: &Expr, r: &Expr) -> bool {
+    match (&l.kind, &r.kind) {
+        (ExprKind::IntConst(a), ExprKind::IntConst(b)) => a == b,
+        (ExprKind::BoolConst(a), ExprKind::BoolConst(b)) => a == b,
+        // One value inhabits `unit`, so two of them are equal by construction.
+        (ExprKind::Unit, ExprKind::Unit) => true,
+        (ExprKind::Tuple(a), ExprKind::Tuple(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| values_equal(x, y))
+        }
+        _ => panic!(
+            "type error: cannot compare `{}` with `{}`",
+            pretty_print_expr(l),
+            pretty_print_expr(r)
+        ),
     }
 }
 

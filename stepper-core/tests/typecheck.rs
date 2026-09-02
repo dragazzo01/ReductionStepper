@@ -59,9 +59,49 @@ fn rejects_unit_against_another_type() {
     rejects_somehow("val x : int = ()");
     rejects_somehow("val x : unit = 1");
     rejects_somehow("val () = 1");
-    // `=` takes ints here, as it does for bools -- unit is not an equality type
-    // in this subset even though it is in real SML.
-    rejects_somehow("val b = () = ()");
+}
+
+// ---------------------------------------------------------------------------
+// Equality types
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compares_any_equality_type() {
+    // The base types...
+    accepts("val b = 1 = 2");
+    accepts("val b = true <> false");
+    accepts("val b = () = ()");
+    // ...and tuples of them, to any depth.
+    accepts("val b = (1, true) = (2, false)");
+    accepts("val b = (1, ((), true)) <> (2, ((), false))");
+}
+
+#[test]
+fn rejects_comparing_functions() {
+    // No way to decide whether two functions agree on every argument, so SML
+    // makes `->` the one type `=` refuses.
+    rejects(
+        "val f = fn x : int => x\nval b = f = f",
+        "`=` needs an equality type, but Arrow(Int, Int) is not one",
+    );
+    // A tuple is only comparable when every component is.
+    rejects_somehow("val f = fn x : int => x\nval b = (1, f) = (1, f)");
+}
+
+#[test]
+fn both_sides_of_a_comparison_must_agree() {
+    rejects("val b = 1 = true", "Expected Int but got type Bool");
+    rejects_somehow("val b = (1, 2) = (1, true)");
+    rejects_somehow("val b = () <> 1");
+}
+
+#[test]
+fn the_ordering_comparisons_still_take_ints_only() {
+    // Only `=` and `<>` are polymorphic; `<` and friends are int-only, which is
+    // also true in SML (there they're overloaded, not polymorphic).
+    rejects_somehow("val b = true < false");
+    rejects_somehow("val b = () <= ()");
+    rejects_somehow("val b = (1, 2) > (1, 3)");
 }
 
 #[test]

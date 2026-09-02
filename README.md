@@ -40,7 +40,7 @@ val z =
 ```
 
 - `val` declarations, with an optional type annotation (`val x : int = 5`) and a pattern on the left: an identifier, `_` (wildcard), a literal (matches only that exact value), or a tuple pattern `(p1, p2, ...)`, nestable.
-- ints, bools and `unit` (one value, `()`), arithmetic (`+ - * div mod ~`, with `div`/`mod` using SML's floor semantics rather than truncating), comparisons (`= <> < <= > >=`), and short-circuiting `andalso`/`orelse`.
+- ints, bools and `unit` (one value, `()`), arithmetic (`+ - * div mod ~`, with `div`/`mod` using SML's floor semantics rather than truncating), comparisons (`< <= > >=` on ints; `=` and `<>` on any equality type, so tuples compare componentwise and functions are rejected, as in SML), and short-circuiting `andalso`/`orelse`.
 - `if e then e else e`, `let val ... in e end`, tuples `(e1, e2, ...)`.
 - `case e of p1 => e1 | p2 => e2 | ...` — pattern matching, tried top to bottom. There's no exhaustiveness checking: a value matching no arm is a runtime failure, same as an unmatched literal `val` pattern (real SML would raise `Match`/`Bind` here; this project doesn't have exceptions yet).
 
