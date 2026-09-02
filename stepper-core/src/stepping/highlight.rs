@@ -35,7 +35,10 @@ pub fn highlight_next(program: &Program) -> Option<NodeId> {
 
 fn highlight_next_expr(expr: &Expr) -> Option<NodeId> {
     match &expr.kind {
-        ExprKind::IntConst(_) | ExprKind::BoolConst(_) | ExprKind::Lambda(..) => None,
+        ExprKind::IntConst(_)
+        | ExprKind::BoolConst(_)
+        | ExprKind::Unit
+        | ExprKind::Lambda(..) => None,
         // Mirrors `step_var`: a variable is only a redex when it names a
         // recursive function waiting to be unrolled.
         ExprKind::Var(binder) => lookup_rec(binder.id).map(|_| expr.id),

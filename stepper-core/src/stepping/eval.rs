@@ -78,11 +78,23 @@ pub(super) fn lookup_rec(binder: BinderId) -> Option<Expr> {
 }
 
 pub(super) fn is_value(expr: &Expr) -> bool {
+    // Listed out rather than closed with a `_ => false`, so that adding an
+    // `ExprKind` fails to compile here instead of silently becoming a term that
+    // is neither a value nor reducible — which is stuck, and shows up only as
+    // `step` and `highlight_next` disagreeing at runtime.
     match &expr.kind {
-        ExprKind::IntConst(_) | ExprKind::BoolConst(_) => true,
+        ExprKind::IntConst(_) | ExprKind::BoolConst(_) | ExprKind::Unit => true,
         ExprKind::Tuple(items) => items.iter().all(is_value),
         ExprKind::Lambda(..) => true,
-        _ => false,
+        ExprKind::Var(_)
+        | ExprKind::BinOp(..)
+        | ExprKind::Neg(_)
+        | ExprKind::AndAlso(..)
+        | ExprKind::OrElse(..)
+        | ExprKind::If(..)
+        | ExprKind::Let(..)
+        | ExprKind::Match(..)
+        | ExprKind::App(..) => false,
     }
 }
 
@@ -109,7 +121,10 @@ fn mod_floor(a: i64, b: i64) -> i64 {
 
 fn step_expr(expr: &Expr) -> Option<Step> {
     match &expr.kind {
-        ExprKind::IntConst(_) | ExprKind::BoolConst(_) | ExprKind::Lambda(..) => None,
+        ExprKind::IntConst(_)
+        | ExprKind::BoolConst(_)
+        | ExprKind::Unit
+        | ExprKind::Lambda(..) => None,
         ExprKind::Var(binder) => step_var(binder),
         ExprKind::BinOp(op, l, r) => step_binop(expr, *op, l, r),
         ExprKind::Neg(inner) => step_neg(expr, inner),

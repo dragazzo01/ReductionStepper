@@ -36,6 +36,25 @@ fn uses_sml_floor_division_not_truncating_division() {
 }
 
 #[test]
+fn unit_is_already_a_value() {
+    assert_eq!(run("val x = ()"), "val x = ()");
+    // Nothing to step inside a tuple of values either.
+    assert_eq!(run("val p = ((), 1)"), "val p = ((), 1)");
+}
+
+#[test]
+fn applies_a_function_to_unit() {
+    assert_eq!(run("val f = fn () => 1 + 1\nval y = f ()"), "val y = 2");
+}
+
+#[test]
+fn a_unit_pattern_matches_and_binds_nothing() {
+    // One value inhabits the type, so the match always succeeds.
+    assert_eq!(run("val () = ()\nval x = 5"), "val x = 5");
+    assert_eq!(run("val x = case () of () => 7"), "val x = 7");
+}
+
+#[test]
 fn reduces_unary_minus() {
     // A negative literal is already a value: nothing to step.
     assert_eq!(run("val x = ~5"), "val x = ~5");

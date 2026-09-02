@@ -61,6 +61,19 @@ fn prints_minus_div_mod() {
 }
 
 #[test]
+fn prints_unit() {
+    // Self-delimiting, so it never takes parens however deeply it's nested.
+    round_trips("val x = ()");
+    round_trips("val () = ()");
+    round_trips("val x : unit = ()");
+    round_trips("val f = fn () => 1");
+    round_trips("val p : unit * int = ((), 1)");
+    round_trips("val f : unit -> int = g");
+    // A unit *type* on the left of `->` is an atom too, unlike a product.
+    round_trips("val f : (unit -> int) -> int = g");
+}
+
+#[test]
 fn prints_unary_minus() {
     // Binds tighter than * and needs no parens around a bare atom.
     round_trips("val x = ~2 * 3");

@@ -169,6 +169,13 @@ impl BinOp {
 pub enum Type {
     Int,
     Bool,
+    /// The type of `()`, whose one value carries no information.
+    ///
+    /// In SML this is the empty record, and so the 0-ary case of `Product` —
+    /// but tuples here are always two or more (one is just parens, and `Product`
+    /// prints by joining with `*`), so spelling it out keeps that invariant and
+    /// costs one match arm wherever `Unit` is genuinely different from a tuple.
+    Unit,
     Product(Vec<Box<Type>>),
     Arrow(Box<Type>, Box<Type>),
 }
@@ -223,6 +230,8 @@ impl Expr {
 pub enum ExprKind {
     IntConst(i64),
     BoolConst(bool),
+    /// `()`. A value, like the other constants — see `Type::Unit`.
+    Unit,
     Var(Binder),
     BinOp(BinOp, Box<Expr>, Box<Expr>),
     Neg(Box<Expr>),
@@ -265,28 +274,38 @@ impl Pattern {
         Pattern::new(pat, None)
     }
 
-    /// The type this pattern states outright, if it states one — either as its own
-    /// `: type` annotation or, for a tuple whose every component states one, as the
-    /// product of those. Nothing else is derivable: an unannotated variable or a
-    /// wildcard could stand for anything, and a literal's type (`0 : int`) is only
-    /// *checked*, never a declaration, since a `fn`'s parameter type must come from
-    /// something the programmer wrote rather than from a pattern that happens to be
-    /// a literal.
+    /// The type this pattern states outright, if it states one — its own `: type`
+    /// annotation, or a type the pattern itself can only have. An unannotated
+    /// variable or a wildcard could stand for anything, and a literal's type
+    /// (`0 : int`) is only *checked*, never a declaration, since a `fn`'s parameter
+    /// type should come from something the programmer wrote rather than from a
+    /// pattern that happens to be a literal.
     ///
     /// This is what lets `fn (x : int, y : bool) => ...` and its `fun` spelling be
     /// accepted without repeating the type: annotating the components says the same
     /// thing as annotating the whole.
+    ///
+    /// `()` is the one pattern that declares a type without being annotated, and
+    /// it isn't an exception to the rule above so much as the degenerate case of
+    /// it: `unit` has a single value, so a `()` pattern cannot have any other
+    /// type, and there is nothing for the programmer to have chosen. Without this,
+    /// SML's most ordinary use of unit — `fn () => e` — would have to be written
+    /// `fn () : unit => e`.
     pub fn declared_type(&self) -> Option<Type> {
         if let Some(typ) = &self.typ {
             return Some(typ.clone());
         }
         match &self.pat {
+            PatternBase::Unit => Some(Type::Unit),
             PatternBase::Tuple(pats) => pats
                 .iter()
                 .map(|p| p.declared_type().map(Box::new))
                 .collect::<Option<Vec<_>>>()
                 .map(Type::Product),
-            _ => None,
+            PatternBase::Var(_)
+            | PatternBase::Wildcard
+            | PatternBase::IntConst(_)
+            | PatternBase::BoolConst(_) => None,
         }
     }
 
@@ -300,7 +319,10 @@ impl Pattern {
     fn collect_binders<'a>(&'a self, out: &mut Vec<&'a Binder>) {
         match &self.pat {
             PatternBase::Var(binder) => out.push(binder),
-            PatternBase::Wildcard | PatternBase::IntConst(_) | PatternBase::BoolConst(_) => {}
+            PatternBase::Wildcard
+            | PatternBase::IntConst(_)
+            | PatternBase::BoolConst(_)
+            | PatternBase::Unit => {}
             PatternBase::Tuple(pats) => pats.iter().for_each(|p| p.collect_binders(out)),
         }
     }
@@ -312,6 +334,8 @@ pub enum PatternBase {
     Wildcard,
     IntConst(i64),
     BoolConst(bool),
+    /// `()`, which matches the one value of `Type::Unit` and binds nothing.
+    Unit,
     Tuple(Vec<Pattern>),
 }
 
@@ -368,7 +392,10 @@ pub fn walk_exprs(program: &Program, f: &mut impl FnMut(&Expr)) {
 pub fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
     f(expr);
     match &expr.kind {
-        ExprKind::IntConst(_) | ExprKind::BoolConst(_) | ExprKind::Var(_) => {}
+        ExprKind::IntConst(_)
+        | ExprKind::BoolConst(_)
+        | ExprKind::Unit
+        | ExprKind::Var(_) => {}
         ExprKind::Neg(inner) => walk_expr(inner, f),
         ExprKind::BinOp(_, l, r)
         | ExprKind::AndAlso(l, r)

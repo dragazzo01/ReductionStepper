@@ -23,6 +23,11 @@ fun classify (n : int) = case n of 0 => 0 | 1 => 10 | m => m * 100
 val a = classify 1
 val b = classify 7
 
+# Unit
+val f = fn () => 6 * 7
+val answer = f ()
+val () = ()
+
 # Lambdas and application
 val twice = fn f : int -> int => fn x : int => f (f x)
 val inc = fn n : int => n + 1

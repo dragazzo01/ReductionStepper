@@ -43,6 +43,28 @@ fn rejects_an_unbound_identifier() {
 }
 
 #[test]
+fn accepts_unit() {
+    accepts("val x : unit = ()");
+    accepts("val () = ()");
+    // `()` needs no annotation: unit has one value, so the pattern can only
+    // have one type. See `Pattern::declared_type`.
+    accepts("val f : unit -> int = fn () => 1\nval y = f ()");
+    accepts("fun f () = 1\nval y = f ()");
+    // Unit is a type like any other, so it nests in tuples and arrows.
+    accepts("val p : unit * int = ((), 1)");
+}
+
+#[test]
+fn rejects_unit_against_another_type() {
+    rejects_somehow("val x : int = ()");
+    rejects_somehow("val x : unit = 1");
+    rejects_somehow("val () = 1");
+    // `=` takes ints here, as it does for bools -- unit is not an equality type
+    // in this subset even though it is in real SML.
+    rejects_somehow("val b = () = ()");
+}
+
+#[test]
 fn rejects_a_chained_comparison() {
     // SML's comparisons are left-associative rather than nonassociative, so
     // `1 < 2 < 3` parses (see `grammar.rs`'s

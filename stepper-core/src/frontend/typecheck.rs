@@ -33,6 +33,7 @@ fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
     match &expr.kind {
         ExprKind::IntConst(_) => Ok(Type::Int),
         ExprKind::BoolConst(_) => Ok(Type::Bool),
+        ExprKind::Unit => Ok(Type::Unit),
         // A use `resolve` found no binder for keeps the id it was minted with,
         // which nothing else shares — so it misses here, and this is where an
         // unbound identifier is reported.
@@ -162,6 +163,13 @@ fn check_pattern_type(pattern: &Pattern, expected_type: &Type) -> Result<(), Str
                 Err(format!("Expected {expected_type:?} for bool pattern"))
             }
         }
+        PatternBase::Unit => {
+            if same_type(expected_type, &Type::Unit) {
+                Ok(())
+            } else {
+                Err(format!("Expected {expected_type:?} for unit pattern"))
+            }
+        }
         PatternBase::Var(_) | PatternBase::Wildcard => Ok(()),
         PatternBase::Tuple(pats) => {
             let Type::Product(expected_typs) = expected_type else {
@@ -199,7 +207,10 @@ fn bind_pattern(
 ) -> Result<(), String> {
     check_pattern_type(pat, ty)?;
     match &pat.pat {
-        PatternBase::Wildcard | PatternBase::IntConst(_) | PatternBase::BoolConst(_) => Ok(()),
+        PatternBase::Wildcard
+        | PatternBase::IntConst(_)
+        | PatternBase::BoolConst(_)
+        | PatternBase::Unit => Ok(()),
         PatternBase::Var(binder) => {
             if !seen.insert(binder.name.clone()) {
                 return Err(format!(
