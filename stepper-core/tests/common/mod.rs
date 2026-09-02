@@ -68,11 +68,17 @@ pub mod expr_builders {
     }
 
     impl Expr {
-        binop!(Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Le, Gt, Ge);
+        binop!(Add, Sub, Mul, RealDiv, Div, Mod, Concat, Eq, Ne, Lt, Le, Gt, Ge);
         binary!(AndAlso, OrElse, App);
 
         pub fn IntConst(n: i64) -> AstExpr {
             AstExpr::new(ExprKind::IntConst(n))
+        }
+        pub fn RealConst(x: f64) -> AstExpr {
+            AstExpr::new(ExprKind::RealConst(x))
+        }
+        pub fn StringConst(s: &str) -> AstExpr {
+            AstExpr::new(ExprKind::StringConst(s.to_string()))
         }
         pub fn BoolConst(b: bool) -> AstExpr {
             AstExpr::new(ExprKind::BoolConst(b))

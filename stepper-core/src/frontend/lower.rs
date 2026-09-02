@@ -223,7 +223,11 @@ fn lower_exp(exp: &ast::Exp) -> Result<Expr> {
     let kind = match exp {
         ast::Exp::SConExp(e) => {
             let scon = require(e.s_con(), e.syntax(), "a constant")?;
-            ExprKind::IntConst(lower_int(&scon, e.syntax())?)
+            match lower_scon(&scon, e.syntax())? {
+                Literal::Int(n) => ExprKind::IntConst(n),
+                Literal::Real(x) => ExprKind::RealConst(x),
+                Literal::Str(s) => ExprKind::StringConst(s),
+            }
         }
         // `true` and `false` are constructors rather than variables, and with no
         // `datatype` in this subset they are the only two there are.
@@ -351,9 +355,22 @@ fn lower_matcher(matcher: &ast::Matcher) -> Result<Vec<(Pattern, Expr)>> {
 fn lower_pat(pat: &ast::Pat) -> Result<Pattern> {
     let base = match pat {
         ast::Pat::WildcardPat(_) => PatternBase::Wildcard,
+        // A real literal is the one constant SML won't let you match on: a pattern
+        // may hold a constant only of an equality type, and `real` isn't one (see
+        // `ast::ExprKind::RealConst`). That's the rule itself rather than a gap in
+        // this subset, so it doesn't go through `unsupported`.
         ast::Pat::SConPat(p) => {
             let scon = require(p.s_con(), p.syntax(), "a constant")?;
-            PatternBase::IntConst(lower_int(&scon, p.syntax())?)
+            match lower_scon(&scon, p.syntax())? {
+                Literal::Int(n) => PatternBase::IntConst(n),
+                Literal::Str(s) => PatternBase::StringConst(s),
+                Literal::Real(_) => {
+                    return Err(Error::at(
+                        p.syntax(),
+                        "`real` is not an equality type, so a real literal cannot be a pattern",
+                    ));
+                }
+            }
         }
         // See the module header: a bare name is a variable here, because the only
         // constructors this subset has are `true` and `false`.
@@ -419,6 +436,8 @@ fn lower_ty(ty: &ast::Ty) -> Result<Type> {
             let path = require(t.path(), t.syntax(), "a type name")?;
             match single_name(&path, t.syntax())?.as_str() {
                 "int" => Ok(Type::Int),
+                "real" => Ok(Type::Real),
+                "string" => Ok(Type::String),
                 "bool" => Ok(Type::Bool),
                 "unit" => Ok(Type::Unit),
                 name => unsupported(t.syntax(), &format!("the type `{name}`")),
@@ -476,16 +495,27 @@ fn is_named(exp: &ast::Exp, name: &str) -> bool {
         .is_some_and(|found| found == name)
 }
 
-/// The value of an integer literal. `~` is SML's minus sign and `0x` its hex
-/// prefix; every other special constant is a form this crate has no value for.
-fn lower_int(scon: &ast::SCon, node: &SyntaxNode) -> Result<i64> {
+/// The value a special constant denotes. Words and characters are the two forms
+/// this crate has no value for; the other three it does.
+enum Literal {
+    Int(i64),
+    Real(f64),
+    Str(String),
+}
+
+fn lower_scon(scon: &ast::SCon, node: &SyntaxNode) -> Result<Literal> {
     match scon.kind {
-        ast::SConKind::IntLit => {}
-        ast::SConKind::RealLit => return unsupported(node, "real literals"),
-        ast::SConKind::WordLit => return unsupported(node, "word literals"),
-        ast::SConKind::CharLit => return unsupported(node, "character literals"),
-        ast::SConKind::StringLit => return unsupported(node, "string literals"),
+        ast::SConKind::IntLit => lower_int(scon, node).map(Literal::Int),
+        ast::SConKind::RealLit => lower_real(scon, node).map(Literal::Real),
+        ast::SConKind::StringLit => lower_string(scon, node).map(Literal::Str),
+        ast::SConKind::WordLit => unsupported(node, "word literals"),
+        ast::SConKind::CharLit => unsupported(node, "character literals"),
     }
+}
+
+/// The value of an integer literal. `~` is SML's minus sign and `0x` its hex
+/// prefix.
+fn lower_int(scon: &ast::SCon, node: &SyntaxNode) -> Result<i64> {
     let text = scon.token.text();
     let (negative, digits) = match text.strip_prefix('~') {
         Some(rest) => (true, rest),
@@ -499,4 +529,70 @@ fn lower_int(scon: &ast::SCon, node: &SyntaxNode) -> Result<i64> {
         return Err(Error::at(node, format!("`{text}` is not a valid integer")));
     };
     Ok(if negative { -magnitude } else { magnitude })
+}
+
+/// The value of a real literal. SML writes its minus sign `~`, in the mantissa
+/// and the exponent alike (`~1.5e~3`); with those turned back into `-`, what is
+/// left is exactly what Rust's `f64` parser reads, correctly rounded.
+fn lower_real(scon: &ast::SCon, node: &SyntaxNode) -> Result<f64> {
+    let text = scon.token.text();
+    text.replace('~', "-")
+        .parse::<f64>()
+        .map_err(|_| Error::at(node, format!("`{text}` is not a valid real")))
+}
+
+/// The value of a string literal: the token's text with its escapes resolved.
+///
+/// The lexer already worked this out in order to accept the token, and then threw
+/// it away — so `lex_util`, which is that same code, is asked again here. Doing it
+/// that way is what keeps `\n`, `\ddd`, `\^c` and multi-line continuations meaning
+/// in the AST exactly what they meant to the lexer.
+fn lower_string(scon: &ast::SCon, node: &SyntaxNode) -> Result<String> {
+    let text = scon.token.text();
+    if has_u_escape(text.as_bytes()) {
+        return unsupported(node, "`\\uXXXX` escapes");
+    }
+    let mut idx = 0;
+    let res = lex_util::string::get(&mut idx, text.as_bytes());
+    match res.actual {
+        Some(value) if idx == text.len() && res.errors.is_empty() => Ok(value),
+        _ => Err(Error::at(node, format!("`{text}` is not a valid string"))),
+    }
+}
+
+/// Whether the literal spelled by `bs` contains a `\uXXXX` escape.
+///
+/// The one escape `lower_string` can't take the lexer's word for: `lex_util`
+/// assembles its four hex digits with `<< 2` where it means `<< 4`, and writes
+/// the result as raw bytes rather than as UTF-8, so `"é"` silently lowers to
+/// the wrong character rather than to `é`. Turning it down is the honest answer
+/// until that's fixed upstream — a stepper that shows you the wrong character is
+/// worse than one that says it can't.
+///
+/// Only the escape's *first* byte can be a `u`, so this walks the escapes rather
+/// than searching for the pair: `\\up` is a backslash followed by "up", and a
+/// `\...\` gap's closing backslash is likewise not the start of an escape.
+fn has_u_escape(bs: &[u8]) -> bool {
+    let mut i = 0;
+    while i < bs.len() {
+        if bs[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        match bs.get(i + 1) {
+            None => return false,
+            Some(b'u') => return true,
+            // A gap runs to its closing backslash, which this consumes along with
+            // it so what follows is read as ordinary content.
+            Some(b) if b.is_ascii_whitespace() => {
+                i += 2;
+                while i < bs.len() && bs[i] != b'\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            Some(_) => i += 2,
+        }
+    }
+    false
 }

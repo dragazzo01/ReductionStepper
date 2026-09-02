@@ -216,3 +216,19 @@ fn a_lambda_alone_is_a_value_with_nothing_to_highlight() {
     let program = parse("val f : int -> int = fn x : int => x + 1");
     assert_eq!(stepping::highlight_next(&program), None);
 }
+
+#[test]
+fn strings_and_reals_are_values_their_operators_reduce_like_any_other() {
+    // Nothing about the search changes for the new base types: a literal is a
+    // value, so the innermost operator whose operands are both literals is next.
+    assert_eq!(
+        render_next(&parse("val s = \"a\" ^ \"b\" ^ \"c\"")),
+        "val s = [y\"a\" ^ \"b\"y] ^ \"c\""
+    );
+    assert_eq!(
+        render_next(&parse("val r = 1.5 + 2.0 * 3.0")),
+        "val r = 1.5 + [y2.0 * 3.0y]"
+    );
+    let program = parse("val s : string = \"done\"");
+    assert_eq!(stepping::highlight_next(&program), None);
+}

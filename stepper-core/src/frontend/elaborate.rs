@@ -238,7 +238,11 @@ fn mentions(expr: &Expr, name: &str) -> bool {
 /// and `fresh_name` must avoid capturing one.
 fn collect_names(expr: &Expr, out: &mut HashSet<String>) {
     match &expr.kind {
-        ExprKind::IntConst(_) | ExprKind::BoolConst(_) | ExprKind::Unit => {}
+        ExprKind::IntConst(_)
+        | ExprKind::RealConst(_)
+        | ExprKind::StringConst(_)
+        | ExprKind::BoolConst(_)
+        | ExprKind::Unit => {}
         ExprKind::Var(binder) => {
             out.insert(binder.name.clone());
         }

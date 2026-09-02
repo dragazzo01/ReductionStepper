@@ -105,13 +105,24 @@ impl PartialEq for Binder {
 /// `andalso`/`orelse` are deliberately *not* here: they short-circuit, so their
 /// right operand may never be evaluated at all, and neither is `~`, which is
 /// unary and atomic in the grammar.
+///
+/// Several of these are *overloaded* in SML rather than being one operation:
+/// `+` adds two ints or two reals, and `<` compares two of either or two
+/// strings. Overloading is a typing question, not a syntactic one, so it lives
+/// entirely in `typecheck::binop_result_type` and `eval::apply_binop` — there is
+/// still exactly one `BinOp::Add`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
     Sub,
     Mul,
+    /// `/`, real division. `div` is the int one — SML spells them differently
+    /// because they are different operators, not two overloadings of one.
+    RealDiv,
     Div,
     Mod,
+    /// `^`, string concatenation.
+    Concat,
     Eq,
     Ne,
     Lt,
@@ -123,12 +134,14 @@ pub enum BinOp {
 impl BinOp {
     /// Every operator, which is what makes `from_symbol` the exact inverse of
     /// `symbol` without a second list of spellings to keep in step.
-    pub const ALL: [BinOp; 11] = [
+    pub const ALL: [BinOp; 13] = [
         BinOp::Add,
         BinOp::Sub,
         BinOp::Mul,
+        BinOp::RealDiv,
         BinOp::Div,
         BinOp::Mod,
+        BinOp::Concat,
         BinOp::Eq,
         BinOp::Ne,
         BinOp::Lt,
@@ -153,8 +166,10 @@ impl BinOp {
             BinOp::Add => "+",
             BinOp::Sub => "-",
             BinOp::Mul => "*",
+            BinOp::RealDiv => "/",
             BinOp::Div => "div",
             BinOp::Mod => "mod",
+            BinOp::Concat => "^",
             BinOp::Eq => "=",
             BinOp::Ne => "<>",
             BinOp::Lt => "<",
@@ -168,6 +183,8 @@ impl BinOp {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Int,
+    Real,
+    String,
     Bool,
     /// The type of `()`, whose one value carries no information.
     ///
@@ -229,6 +246,11 @@ impl Expr {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
     IntConst(i64),
+    /// A real literal. `f64`, so `PartialEq` on it is IEEE equality and `nan`
+    /// is unequal to itself — which is exactly why `real` isn't one of SML's
+    /// equality types, and so never reaches `eval::values_equal`.
+    RealConst(f64),
+    StringConst(String),
     BoolConst(bool),
     /// `()`. A value, like the other constants — see `Type::Unit`.
     Unit,
@@ -305,6 +327,7 @@ impl Pattern {
             PatternBase::Var(_)
             | PatternBase::Wildcard
             | PatternBase::IntConst(_)
+            | PatternBase::StringConst(_)
             | PatternBase::BoolConst(_) => None,
         }
     }
@@ -321,6 +344,7 @@ impl Pattern {
             PatternBase::Var(binder) => out.push(binder),
             PatternBase::Wildcard
             | PatternBase::IntConst(_)
+            | PatternBase::StringConst(_)
             | PatternBase::BoolConst(_)
             | PatternBase::Unit => {}
             PatternBase::Tuple(pats) => pats.iter().for_each(|p| p.collect_binders(out)),
@@ -333,6 +357,10 @@ pub enum PatternBase {
     Var(Binder),
     Wildcard,
     IntConst(i64),
+    /// A string literal pattern. There is deliberately no *real* one: SML only
+    /// admits constants of an equality type in a pattern, and `real` isn't one
+    /// (see `ExprKind::RealConst`), so `frontend::lower` rejects it outright.
+    StringConst(String),
     BoolConst(bool),
     /// `()`, which matches the one value of `Type::Unit` and binds nothing.
     Unit,
@@ -393,6 +421,8 @@ pub fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
     f(expr);
     match &expr.kind {
         ExprKind::IntConst(_)
+        | ExprKind::RealConst(_)
+        | ExprKind::StringConst(_)
         | ExprKind::BoolConst(_)
         | ExprKind::Unit
         | ExprKind::Var(_) => {}

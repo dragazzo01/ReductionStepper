@@ -56,12 +56,13 @@ fn parens_if(needed: bool, doc: Doc) -> Doc {
     }
 }
 
-/// Whether this expression prints starting with a `~` — the two forms that do
-/// being a negation and a negative literal. See the `Neg` arm of `expr_body`.
+/// Whether this expression prints starting with a `~` — a negation, or a
+/// negative literal of either numeric type. See the `Neg` arm of `expr_body`.
 fn starts_with_tilde(expr: &Expr) -> bool {
-    match expr.kind {
+    match &expr.kind {
         ExprKind::Neg(_) => true,
-        ExprKind::IntConst(n) => n < 0,
+        ExprKind::IntConst(n) => *n < 0,
+        ExprKind::RealConst(x) => format_real(*x).starts_with('~'),
         _ => false,
     }
 }
@@ -74,6 +75,49 @@ pub(super) fn format_int(n: i64) -> String {
     } else {
         n.to_string()
     }
+}
+
+/// A real, in the shortest form that reads back as the same `f64` — Rust's `{:?}`
+/// is exactly that — respelled the way SML writes one: `~` for the minus sign, in
+/// the mantissa and the exponent alike, and always a `.` or an `e` so the token
+/// stays a real rather than becoming an int.
+///
+/// The infinities and `nan` are printed the way the standard basis does, and are
+/// the one output of this module that doesn't parse back: no SML *literal*
+/// denotes them, so they can only ever arrive by having been computed.
+pub(super) fn format_real(x: f64) -> String {
+    if x.is_nan() {
+        return "nan".to_string();
+    }
+    if x.is_infinite() {
+        return if x < 0.0 { "~inf" } else { "inf" }.to_string();
+    }
+    format!("{x:?}").replace('-', "~")
+}
+
+/// A string, quoted and escaped so it lexes back to the same characters. The
+/// escapes SML gives a name to are written that way, and any other ASCII control
+/// character goes out as `\ddd`, its decimal code in exactly three digits.
+///
+/// Everything above ASCII is written as itself, deliberately. `\ddd` is a *byte*
+/// escape, so a character outside ASCII has no single-escape spelling and would
+/// come back as something that isn't UTF-8 — whereas the character itself is
+/// content the lexer copies through unchanged.
+pub(super) fn format_string(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_ascii_control() => out.push_str(&format!("\\{:03}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +191,7 @@ fn pattern_base_doc(base: &PatternBase, view: &ViewState) -> Doc {
         PatternBase::Var(binder) => var(&binder.name),
         PatternBase::Wildcard => var("_"),
         PatternBase::IntConst(n) => lit(format_int(*n)),
+        PatternBase::StringConst(s) => lit(format_string(s)),
         PatternBase::BoolConst(b) => lit(b.to_string()),
         PatternBase::Unit => lit("()".to_string()),
         PatternBase::Tuple(pats) => Doc::group(Doc::concat(vec![
@@ -173,6 +218,8 @@ fn type_doc(ty: &Type) -> Doc {
 pub(super) fn type_string(ty: &Type) -> String {
     match ty {
         Type::Int => "int".to_string(),
+        Type::Real => "real".to_string(),
+        Type::String => "string".to_string(),
         Type::Bool => "bool".to_string(),
         Type::Unit => "unit".to_string(),
         Type::Product(types) => types
@@ -193,7 +240,7 @@ pub(super) fn type_string(ty: &Type) -> String {
 fn type_atom_string(ty: &Type) -> String {
     match ty {
         Type::Product(_) | Type::Arrow(_, _) => format!("({})", type_string(ty)),
-        Type::Int | Type::Bool | Type::Unit => type_string(ty),
+        Type::Int | Type::Real | Type::String | Type::Bool | Type::Unit => type_string(ty),
     }
 }
 
@@ -204,8 +251,9 @@ fn type_atom_string(ty: &Type) -> String {
 /// Builds `expr`, parenthesizing it if its own precedence is lower than
 /// `min_prec` (the precedence required by whatever position it's sitting in).
 /// Lowest to highest: `if`/`case`/`fn` are 0; `orelse` is 1; `andalso` is 2;
-/// comparisons (`=`/`<>`/`<`/`<=`/`>`/`>=`) are 3; `+`/`-` are 4; `*`/`div`/`mod`
-/// are 5; function application is 6 — above every infix operator, as in SML;
+/// comparisons (`=`/`<>`/`<`/`<=`/`>`/`>=`) are 3; `+`/`-`/`^` are 4;
+/// `*`/`/`/`div`/`mod` are 5; function application is 6 — above every infix
+/// operator, as in SML;
 /// `~` is 7; atoms (literals, variables, tuples, `let`) are unconditionally high
 /// and ignore `min_prec` entirely. A left-associative binary op passes its own
 /// precedence to its left child and one more than that to its right child, so
@@ -225,6 +273,8 @@ pub fn expr_doc(expr: &Expr, min_prec: u8, view: &ViewState) -> Doc {
 fn expr_body(expr: &Expr, min_prec: u8, view: &ViewState) -> Doc {
     match &expr.kind {
         ExprKind::IntConst(n) => lit(format_int(*n)),
+        ExprKind::RealConst(x) => lit(format_real(*x)),
+        ExprKind::StringConst(s) => lit(format_string(s)),
         ExprKind::BoolConst(b) => lit(b.to_string()),
         // Self-delimiting, so it prints bare wherever it sits — `min_prec` can
         // never call for parens around `()`.
@@ -495,8 +545,8 @@ fn collapsed_lambda_doc(cases: &[(Pattern, Expr)], view: &ViewState) -> Doc {
 fn binop_prec(op: BinOp) -> (u8, u8, u8) {
     match op {
         BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => (3, 3, 4),
-        BinOp::Add | BinOp::Sub => (4, 4, 5),
-        BinOp::Mul | BinOp::Div | BinOp::Mod => (5, 5, 6),
+        BinOp::Add | BinOp::Sub | BinOp::Concat => (4, 4, 5),
+        BinOp::Mul | BinOp::RealDiv | BinOp::Div | BinOp::Mod => (5, 5, 6),
     }
 }
 

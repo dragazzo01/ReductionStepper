@@ -113,6 +113,8 @@ fn renamed_expr(expr: &Expr, renaming: &HashMap<BinderId, BinderId>) -> Expr {
     let kind = match &expr.kind {
         ExprKind::Var(binder) => ExprKind::Var(renamed_binder(binder, renaming)),
         ExprKind::IntConst(n) => ExprKind::IntConst(*n),
+        ExprKind::RealConst(x) => ExprKind::RealConst(*x),
+        ExprKind::StringConst(s) => ExprKind::StringConst(s.clone()),
         ExprKind::BoolConst(b) => ExprKind::BoolConst(*b),
         ExprKind::Unit => ExprKind::Unit,
         ExprKind::BinOp(op, l, r) => ExprKind::BinOp(*op, recur(l), recur(r)),
@@ -173,7 +175,11 @@ pub(super) fn substitute(
             }
             return expr.clone();
         }
-        ExprKind::IntConst(_) | ExprKind::BoolConst(_) | ExprKind::Unit => return expr.clone(),
+        ExprKind::IntConst(_)
+        | ExprKind::RealConst(_)
+        | ExprKind::StringConst(_)
+        | ExprKind::BoolConst(_)
+        | ExprKind::Unit => return expr.clone(),
         ExprKind::BinOp(op, l, r) => ExprKind::BinOp(*op, sub!(l), sub!(r)),
         ExprKind::Neg(inner) => ExprKind::Neg(sub!(inner)),
         ExprKind::AndAlso(l, r) => ExprKind::AndAlso(sub!(l), sub!(r)),
@@ -268,6 +274,12 @@ pub(super) fn try_match(pat: &Pattern, value: &Expr) -> Option<Vec<(BinderId, Ex
                 unreachable!("typechecked: IntConst pattern only meets an int")
             };
             (v == n).then(Vec::new)
+        }
+        PatternBase::StringConst(s) => {
+            let ExprKind::StringConst(v) = &value.kind else {
+                unreachable!("typechecked: StringConst pattern only meets a string")
+            };
+            (v == s).then(Vec::new)
         }
         PatternBase::BoolConst(b) => {
             let ExprKind::BoolConst(v) = &value.kind else {

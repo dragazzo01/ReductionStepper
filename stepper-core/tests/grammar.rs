@@ -948,8 +948,8 @@ fn rejects_unimplemented_declarations() {
 fn rejects_unimplemented_expressions() {
     not_yet("val x = [1, 2]", "lists");
     not_yet("val x = {a = 1}", "records");
-    not_yet("val x = \"hi\"", "string literals");
-    not_yet("val x = 1.5", "real literals");
+    not_yet("val x = #\"c\"", "character literals");
+    not_yet("val x = 0w5", "word literals");
     not_yet("val x = (1; 2)", "`;` expression sequences");
     not_yet("val x = while true do 1", "`while` loops");
     not_yet("val x = 1 : int", "type annotations on expressions");
@@ -958,10 +958,10 @@ fn rejects_unimplemented_expressions() {
 
 #[test]
 fn rejects_operators_it_cannot_evaluate() {
-    // The eleven it can are `BinOp::ALL`; every other name the standard basis
+    // The thirteen it can are `BinOp::ALL`; every other name the standard basis
     // makes infix parses fine and is turned down here.
-    not_yet("val x = 3 / 2", "the operator `/`");
     not_yet("val x = 1 :: 2", "the operator `::`");
+    not_yet("val x = f before g", "the operator `before`");
     not_yet("val x = f o g", "the operator `o`");
 }
 
@@ -1032,4 +1032,134 @@ fn parses_hexadecimal_literals() {
 #[test]
 fn rejects_an_out_of_range_literal() {
     assert!(parse_program("val x = 99999999999999999999").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Strings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parses_string_literals_and_their_type() {
+    assert_eq!(
+        parse("val s : string = \"hi\""),
+        vec![val(pvar_typed("s", Type::String), Expr::StringConst("hi"))]
+    );
+    assert_eq!(expr_of("val s = \"\""), Expr::StringConst(""));
+}
+
+#[test]
+fn resolves_string_escapes() {
+    // The AST holds the characters, not the spelling: `\n` is one newline, and a
+    // `\ddd` is the character with that decimal code.
+    assert_eq!(
+        expr_of("val s = \"a\\nb\\tc\\\"d\\\\e\""),
+        Expr::StringConst("a\nb\tc\"d\\e")
+    );
+    assert_eq!(expr_of("val s = \"\\065\""), Expr::StringConst("A"));
+    // A `\...\` gap swallows the whitespace between its two backslashes, which is
+    // how SML writes one string across several lines.
+    assert_eq!(
+        expr_of("val s = \"one \\\n   \\two\""),
+        Expr::StringConst("one two")
+    );
+}
+
+#[test]
+fn rejects_the_one_escape_millet_gets_wrong() {
+    // `lex_util` assembles `\uXXXX`'s hex digits with `<< 2` where it means
+    // `<< 4`, and writes raw bytes rather than UTF-8, so `"\u00e9"` would come
+    // out as some other character entirely. Better to say so than to show it.
+    let error = parse_program("val s = \"\\u00e9\"").expect_err("`\\u` is turned down");
+    assert!(error.contains("`\\uXXXX` escapes"), "got: {error}");
+    // Only the byte right after a backslash can start an escape, so neither an
+    // escaped backslash nor a gap's closing one is mistaken for a `\u`.
+    assert_eq!(expr_of("val s = \"\\\\up\""), Expr::StringConst("\\up"));
+    assert_eq!(expr_of("val s = \"a\\   \\up\""), Expr::StringConst("aup"));
+}
+
+#[test]
+fn parses_concat_at_the_same_precedence_as_plus() {
+    // `^` is `infix 6` in the standard basis, alongside `+` and `-`, and is
+    // left-associative like them.
+    assert_eq!(
+        expr_of("val s = \"a\" ^ \"b\" ^ \"c\""),
+        Expr::Concat(
+            Box::new(Expr::Concat(
+                Box::new(Expr::StringConst("a")),
+                Box::new(Expr::StringConst("b")),
+            )),
+            Box::new(Expr::StringConst("c")),
+        )
+    );
+    // Below `*`, so the multiplication groups first even though `^` comes first.
+    assert_eq!(
+        expr_of("val s = a ^ b * c"),
+        Expr::Concat(
+            Box::new(ident("a")),
+            Box::new(Expr::Mul(Box::new(ident("b")), Box::new(ident("c")))),
+        )
+    );
+}
+
+#[test]
+fn parses_string_patterns() {
+    let ExprKind::Match(_, arms) =
+        expr_of("val x = case s of \"a\" => 1 | \"\\n\" => 2 | _ => 3").kind
+    else {
+        panic!("expected a Match");
+    };
+    let patterns: Vec<_> = arms.into_iter().map(|(p, _)| p).collect();
+    assert_eq!(
+        patterns,
+        vec![
+            pat(PatternBase::StringConst("a".to_string())),
+            pat(PatternBase::StringConst("\n".to_string())),
+            pat(PatternBase::Wildcard),
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reals
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parses_real_literals_and_their_type() {
+    assert_eq!(
+        parse("val r : real = 1.5"),
+        vec![val(pvar_typed("r", Type::Real), Expr::RealConst(1.5))]
+    );
+    // `~` is part of the literal, exactly as it is for an int (see
+    // `parses_literal_patterns_including_negative_ints`).
+    assert_eq!(expr_of("val r = ~2.25"), Expr::RealConst(-2.25));
+    // An exponent, whose sign is written with `~` too.
+    assert_eq!(expr_of("val r = 1e3"), Expr::RealConst(1000.0));
+    assert_eq!(expr_of("val r = 1.5e~2"), Expr::RealConst(0.015));
+}
+
+#[test]
+fn parses_real_division_at_the_same_precedence_as_times() {
+    // `/` is `infix 7` in the standard basis, alongside `*`, `div` and `mod`.
+    assert_eq!(
+        expr_of("val r = a + b / c"),
+        Expr::Add(
+            Box::new(ident("a")),
+            Box::new(Expr::RealDiv(Box::new(ident("b")), Box::new(ident("c")))),
+        )
+    );
+    assert_eq!(
+        expr_of("val r = a / b / c"),
+        Expr::RealDiv(
+            Box::new(Expr::RealDiv(Box::new(ident("a")), Box::new(ident("b")))),
+            Box::new(ident("c")),
+        )
+    );
+}
+
+#[test]
+fn rejects_a_real_literal_pattern() {
+    // Not a gap in the subset: SML admits a constant in a pattern only if its type
+    // is an equality type, and `real` isn't one.
+    let error = parse_program("val 1.5 = 1.5").expect_err("a real literal is not a pattern");
+    assert!(error.contains("not an equality type"), "got: {error}");
 }
