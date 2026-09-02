@@ -83,7 +83,7 @@ FunParams -> Vec<Pattern>:
 
 Pattern -> Pattern:
       AtomicPattern { $1 }
-    | AtomicPattern ':' Type { Pattern { pat: $1.pat, typ: Some($3) } }
+    | AtomicPattern ':' Type { Pattern { id: $1.id, pat: $1.pat, typ: Some($3) } }
     ;
 
 /// SML's `atpat`: the self-delimiting pattern forms, and so exactly the ones usable
@@ -93,8 +93,8 @@ Pattern -> Pattern:
 AtomicPattern -> Pattern:
       'ID'
       {
-          Pattern::untyped(PatternBase::Ident(
-              $lexer.span_str($1.unwrap_or_else(|e| e).span()).to_string()
+          Pattern::untyped(PatternBase::Var(
+              Binder::new($lexer.span_str($1.unwrap_or_else(|e| e).span()))
           ))
       }
     | 'WILDCARD' { Pattern::untyped(PatternBase::Wildcard) }
@@ -139,24 +139,24 @@ TypeProduct -> Vec<Box<Type>>:
     ;
 
 Expr -> Expr:
-      Expr '+' Expr { Expr::Add(Box::new($1), Box::new($3)) }
-    | Expr '-' Expr { Expr::Sub(Box::new($1), Box::new($3)) }
-    | Expr '*' Expr { Expr::Mul(Box::new($1), Box::new($3)) }
-    | Expr 'DIV' Expr { Expr::Div(Box::new($1), Box::new($3)) }
-    | Expr 'MOD' Expr { Expr::Mod(Box::new($1), Box::new($3)) }
-    | Expr '=' Expr { Expr::Eq(Box::new($1), Box::new($3)) }
-    | Expr '<>' Expr { Expr::Ne(Box::new($1), Box::new($3)) }
-    | Expr '<' Expr { Expr::Lt(Box::new($1), Box::new($3)) }
-    | Expr '<=' Expr { Expr::Le(Box::new($1), Box::new($3)) }
-    | Expr '>' Expr { Expr::Gt(Box::new($1), Box::new($3)) }
-    | Expr '>=' Expr { Expr::Ge(Box::new($1), Box::new($3)) }
-    | Expr 'ANDALSO' Expr { Expr::AndAlso(Box::new($1), Box::new($3)) }
-    | Expr 'ORELSE' Expr { Expr::OrElse(Box::new($1), Box::new($3)) }
+      Expr '+' Expr { Expr::new(ExprKind::Add(Box::new($1), Box::new($3))) }
+    | Expr '-' Expr { Expr::new(ExprKind::Sub(Box::new($1), Box::new($3))) }
+    | Expr '*' Expr { Expr::new(ExprKind::Mul(Box::new($1), Box::new($3))) }
+    | Expr 'DIV' Expr { Expr::new(ExprKind::Div(Box::new($1), Box::new($3))) }
+    | Expr 'MOD' Expr { Expr::new(ExprKind::Mod(Box::new($1), Box::new($3))) }
+    | Expr '=' Expr { Expr::new(ExprKind::Eq(Box::new($1), Box::new($3))) }
+    | Expr '<>' Expr { Expr::new(ExprKind::Ne(Box::new($1), Box::new($3))) }
+    | Expr '<' Expr { Expr::new(ExprKind::Lt(Box::new($1), Box::new($3))) }
+    | Expr '<=' Expr { Expr::new(ExprKind::Le(Box::new($1), Box::new($3))) }
+    | Expr '>' Expr { Expr::new(ExprKind::Gt(Box::new($1), Box::new($3))) }
+    | Expr '>=' Expr { Expr::new(ExprKind::Ge(Box::new($1), Box::new($3))) }
+    | Expr 'ANDALSO' Expr { Expr::new(ExprKind::AndAlso(Box::new($1), Box::new($3))) }
+    | Expr 'ORELSE' Expr { Expr::new(ExprKind::OrElse(Box::new($1), Box::new($3))) }
     | 'IF' Expr 'THEN' Expr 'ELSE' Expr
-      { Expr::If(Box::new($2), Box::new($4), Box::new($6)) }
-    | 'CASE' Expr 'OF' MatchArms { Expr::Match(Box::new($2), $4) }
+      { Expr::new(ExprKind::If(Box::new($2), Box::new($4), Box::new($6))) }
+    | 'CASE' Expr 'OF' MatchArms { Expr::new(ExprKind::Match(Box::new($2), $4)) }
     | 'FN' MatchArms
-      { Expr::Lambda($2) }
+      { Expr::new(ExprKind::Lambda($2)) }
     | AppExpr { $1 }
     ;
 
@@ -177,7 +177,7 @@ TupleItems -> Vec<Expr>:
 /// never `f (x + y)` — without touching the precedence table at all.
 AppExpr -> Expr:
       AtomicExpr { $1 }
-    | AppExpr AtomicExpr { Expr::App(Box::new($1), Box::new($2)) }
+    | AppExpr AtomicExpr { Expr::new(ExprKind::App(Box::new($1), Box::new($2))) }
     ;
 
 /// SML's `atexp`: the self-delimiting expression forms, each usable as an
@@ -197,20 +197,22 @@ AppExpr -> Expr:
 /// which is the one deliberate divergence here and the friendlier reading.
 AtomicExpr -> Expr:
       '(' Expr ')' { $2 }
-    | '(' TupleItems ')' { Expr::Tuple($2) }
-    | 'LET' Program 'IN' Expr 'END' { Expr::Let($2, Box::new($4)) }
-    | '~' AtomicExpr { Expr::Neg(Box::new($2)) }
-    | 'TRUE' { Expr::BoolConst(true) }
-    | 'FALSE' { Expr::BoolConst(false) }
+    | '(' TupleItems ')' { Expr::new(ExprKind::Tuple($2)) }
+    | 'LET' Program 'IN' Expr 'END' { Expr::new(ExprKind::Let($2, Box::new($4))) }
+    | '~' AtomicExpr { Expr::new(ExprKind::Neg(Box::new($2))) }
+    | 'TRUE' { Expr::new(ExprKind::BoolConst(true)) }
+    | 'FALSE' { Expr::new(ExprKind::BoolConst(false)) }
     | 'INT'
       {
-          Expr::IntConst(
+          Expr::new(ExprKind::IntConst(
               $lexer.span_str($1.unwrap_or_else(|e| e).span()).parse().unwrap_or(0)
-          )
+          ))
       }
+    // A fresh `Binder` per occurrence, binding or not — the action can't know
+    // what's in scope. `frontend::resolve` repoints the uses afterwards.
     | 'ID'
       {
-          Expr::Ident($lexer.span_str($1.unwrap_or_else(|e| e).span()).to_string())
+          Expr::var(Binder::new($lexer.span_str($1.unwrap_or_else(|e| e).span())))
       }
     ;
 
@@ -225,5 +227,5 @@ MatchArms -> Vec<(Pattern, Expr)>:
     | MatchArms '|' Pattern '=>' Expr { let mut v = $1; v.push(($3, $5)); v }
     ;
 %%
-use super::ast::{Decl, ValDecl, Expr, Pattern, PatternBase, Type};
+use super::ast::{Binder, Decl, Expr, ExprKind, Pattern, PatternBase, Type, ValDecl};
 use super::elaborate::{fun_decl, FunClause};

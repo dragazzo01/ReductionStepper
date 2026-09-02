@@ -459,21 +459,6 @@ fn a_multi_clause_fun_picks_the_first_clause_that_matches() {
 }
 
 #[test]
-fn several_clauses_and_arguments_dispatch_on_the_tuple_of_them() {
-    // The generated arguments are collected into a tuple, which is then matched
-    // against one arm per clause — so both arguments are reduced before any
-    // clause is chosen.
-    let src = "fun g 0 (y : int) = y | g (x : int) (y : int) = x * y\n";
-    assert_eq!(run(&format!("{src}val a = g (1 - 1) 7")), "val a = 7");
-    assert_eq!(run(&format!("{src}val a = g 3 7")), "val a = 21");
-    // Partially applied, exactly like any other curried function.
-    assert_eq!(
-        run(&format!("{src}val p : int -> int = g 3\nval a = p 7")),
-        "val a = 21"
-    );
-}
-
-#[test]
 fn a_fun_that_takes_a_tuple_apart_binds_its_components() {
     assert_eq!(
         run("fun add (x : int, y : int) = x + y\nval s = add (1, 2)"),

@@ -1,67 +1,71 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use crate::ast::{Decl, ValDecl, Expr, Pattern, PatternBase, Program, Type};
+use crate::ast::{BinderId, Decl, Expr, ExprKind, Pattern, PatternBase, Program, Type, ValDecl};
 use crate::pretty::{pretty_print_expr, pretty_print_pattern};
 
-/// Maps declared names to their types. `Let` typechecks into a clone of the outer
-/// env (see below), so a later `val x = ...` shadowing an earlier one just means a
-/// later `insert` overwriting an earlier one — same result as `subst.rs`'s
-/// shadowing, without needing to track insertion order.
-type TypeEnv = HashMap<String, Type>;
+/// Maps each variable — identified by its binding site, not its name — to its
+/// type.
+///
+/// Keying by `BinderId` means shadowing needs no handling at all: an inner
+/// `val x` is a different key from an outer one, so neither can overwrite or hide
+/// the other, and `frontend::resolve` has already decided which one any given use
+/// refers to. The scope-shaped `env.clone()`s below are kept because they say
+/// plainly what scopes what, but with unique ids they no longer carry weight.
+type TypeEnv = HashMap<BinderId, Type>;
 
 // this will get more complicated as I have type aliases
 fn same_type(typ1: &Type, typ2: &Type) -> bool {
     typ1 == typ2
 }
 
-fn lookup_type(env: &TypeEnv, name: &str) -> Option<Type> {
-    env.get(name).cloned()
-}
-
 fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
-    match expr {
-        Expr::IntConst(_) => Ok(Type::Int),
-        Expr::BoolConst(_) => Ok(Type::Bool),
-        Expr::Ident(name) => {
-            lookup_type(env, name).ok_or_else(|| format!("Unbound identifier: {name}"))
-        }
+    match &expr.kind {
+        ExprKind::IntConst(_) => Ok(Type::Int),
+        ExprKind::BoolConst(_) => Ok(Type::Bool),
+        // A use `resolve` found no binder for keeps the id it was minted with,
+        // which nothing else shares — so it misses here, and this is where an
+        // unbound identifier is reported.
+        ExprKind::Var(binder) => env
+            .get(&binder.id)
+            .cloned()
+            .ok_or_else(|| format!("Unbound identifier: {}", binder.name)),
 
-        Expr::Add(e1, e2)
-        | Expr::Sub(e1, e2)
-        | Expr::Mul(e1, e2)
-        | Expr::Div(e1, e2)
-        | Expr::Mod(e1, e2) => {
+        ExprKind::Add(e1, e2)
+        | ExprKind::Sub(e1, e2)
+        | ExprKind::Mul(e1, e2)
+        | ExprKind::Div(e1, e2)
+        | ExprKind::Mod(e1, e2) => {
             check_expr_type(env, e1, &Type::Int)?;
             check_expr_type(env, e2, &Type::Int)?;
             Ok(Type::Int)
         }
-        Expr::Neg(e1) => {
+        ExprKind::Neg(e1) => {
             check_expr_type(env, e1, &Type::Int)?;
             Ok(Type::Int)
         }
-        Expr::Eq(e1, e2)
-        | Expr::Ne(e1, e2)
-        | Expr::Lt(e1, e2)
-        | Expr::Le(e1, e2)
-        | Expr::Gt(e1, e2)
-        | Expr::Ge(e1, e2) => {
+        ExprKind::Eq(e1, e2)
+        | ExprKind::Ne(e1, e2)
+        | ExprKind::Lt(e1, e2)
+        | ExprKind::Le(e1, e2)
+        | ExprKind::Gt(e1, e2)
+        | ExprKind::Ge(e1, e2) => {
             check_expr_type(env, e1, &Type::Int)?;
             check_expr_type(env, e2, &Type::Int)?;
             Ok(Type::Bool)
         }
-        Expr::AndAlso(e1, e2) | Expr::OrElse(e1, e2) => {
+        ExprKind::AndAlso(e1, e2) | ExprKind::OrElse(e1, e2) => {
             check_expr_type(env, e1, &Type::Bool)?;
             check_expr_type(env, e2, &Type::Bool)?;
             Ok(Type::Bool)
         }
-        Expr::If(cond, then_branch, else_branch) => {
+        ExprKind::If(cond, then_branch, else_branch) => {
             check_expr_type(env, cond, &Type::Bool)?;
             let then_ty = infer_expr_type(env, then_branch)?;
             check_expr_type(env, else_branch, &then_ty)?;
             Ok(then_ty)
         }
-        Expr::Let(decls, body) => {
+        ExprKind::Let(decls, body) => {
             // Bindings only live for the body, so typecheck into a scope local to this
             // call rather than mutating `env` — mirrors how `step_let` substitutes into
             // `body` without touching anything outside the `let`.
@@ -69,15 +73,14 @@ fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
             typecheck_decls(&mut inner_env, decls)?;
             infer_expr_type(&inner_env, body)
         }
-        Expr::Tuple(exprs) => {
+        ExprKind::Tuple(exprs) => {
             let types = exprs
                 .iter()
                 .map(|e| infer_expr_type(env, e))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Type::Product(types.into_iter().map(Box::new).collect()))
         }
-        Expr::Highlighted(expr, _) => infer_expr_type(env, expr),
-        Expr::Match(scrutinee, arms) => {
+        ExprKind::Match(scrutinee, arms) => {
             let scrutinee_ty = infer_expr_type(env, scrutinee)?;
             let (first_pat, first_expr) = arms
                 .first()
@@ -92,7 +95,7 @@ fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
             }
             Ok(result_ty)
         }
-        Expr::Lambda(cases) => {
+        ExprKind::Lambda(cases) => {
             // The parameter type is mandatory in the grammar (no unification engine
             // to infer it from how the lambda is later applied), so binding it is
             // exactly like binding a `val` decl's pattern against its declared type.
@@ -116,7 +119,7 @@ fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
                 Box::new(result_ty),
             ))
         }
-        Expr::App(f, arg) => {
+        ExprKind::App(f, arg) => {
             let f_ty = infer_expr_type(env, f)?;
             let Type::Arrow(param_ty, result_ty) = f_ty else {
                 return Err(format!(
@@ -163,7 +166,7 @@ fn check_pattern_type(pattern: &Pattern, expected_type: &Type) -> Result<(), Str
                 Err(format!("Expected {expected_type:?} for bool pattern"))
             }
         }
-        PatternBase::Ident(_) | PatternBase::Wildcard => Ok(()),
+        PatternBase::Var(_) | PatternBase::Wildcard => Ok(()),
         PatternBase::Tuple(pats) => {
             let Type::Product(expected_typs) = expected_type else {
                 return Err(format!(
@@ -182,15 +185,16 @@ fn check_pattern_type(pattern: &Pattern, expected_type: &Type) -> Result<(), Str
     }
 }
 
-/// Matches `pat` against `ty`, inserting a binding into `env` for every identifier
+/// Matches `pat` against `ty`, inserting a binding into `env` for every variable
 /// `pat` contains. `Wildcard` matches anything and binds nothing; `Tuple` requires
 /// a `Product` of the same arity and recurses componentwise — a shape or arity
 /// mismatch is a type error, same as any other `Expected .. but got ..` case.
-/// `seen` tracks names already bound by *this* pattern (not `env`, which may
-/// legitimately already hold a same-named binding from an earlier decl being
-/// shadowed) so a non-linear pattern like `val (x, x) = ...` is rejected — SML
-/// disallows this too, since it'd otherwise be ambiguous which binding a later use
-/// of `x` refers to.
+///
+/// `seen` tracks *names* already bound by this pattern, so a non-linear pattern
+/// like `val (x, x) = ...` is rejected — SML disallows it too, since it'd
+/// otherwise be ambiguous which binding a later use of `x` refers to. Names, not
+/// ids, because the two `x`s here are two separate binding sites with two
+/// distinct ids: being distinct is exactly what makes them a problem.
 fn bind_pattern(
     env: &mut TypeEnv,
     seen: &mut HashSet<String>,
@@ -200,13 +204,14 @@ fn bind_pattern(
     check_pattern_type(pat, ty)?;
     match &pat.pat {
         PatternBase::Wildcard | PatternBase::IntConst(_) | PatternBase::BoolConst(_) => Ok(()),
-        PatternBase::Ident(name) => {
-            if !seen.insert(name.clone()) {
+        PatternBase::Var(binder) => {
+            if !seen.insert(binder.name.clone()) {
                 return Err(format!(
-                    "Variable {name} is bound more than once in this pattern"
+                    "Variable {} is bound more than once in this pattern",
+                    binder.name
                 ));
             }
-            env.insert(name.clone(), ty.clone());
+            env.insert(binder.id, ty.clone());
             Ok(())
         }
         PatternBase::Tuple(pats) => {
@@ -250,13 +255,13 @@ fn typecheck_val_rec_decl(env: &mut TypeEnv, decl: &ValDecl) -> Result<(), Strin
     let Some(typ) = &decl.pat.typ else {
         return Err(String::from("val rec requires an explict type annoation"));
     };
-    let PatternBase::Ident(_) = &decl.pat.pat else {
+    let PatternBase::Var(_) = &decl.pat.pat else {
         return Err(String::from("must use single identifier for val rec"));
     };
     let Type::Arrow(_, _) = typ else {
         return Err(String::from("val rec requires a function type"));
     };
-    let Expr::Lambda(_) = decl.expr else {
+    let ExprKind::Lambda(_) = decl.expr.kind else {
         return Err(String::from("val rec must have a fn expression on rhs"));
     };
     bind_pattern(env, &mut HashSet::new(), &decl.pat, &typ)?;

@@ -5,9 +5,11 @@
 mod common;
 
 use common::*;
-use stepper_core::ast::{Expr, HighlightColor, PatternBase, Type};
+use common::expr_builders::Expr;
+use stepper_core::ast::{PatternBase, Type};
+use stepper_core::ast::lambda_ids;
+use stepper_core::view::HighlightColor;
 use stepper_core::pretty::pretty_print;
-
 /// Asserts that `src` prints back as itself, and that the printed form still
 /// parses to the same AST.
 fn round_trips(src: &str) {
@@ -199,41 +201,182 @@ fn prints_application() {
 }
 
 #[test]
-fn prints_a_highlighted_node_wrapped_in_sentinels() {
-    // The sentinels are Private Use Area characters (`markers` renders them as
-    // `[y..y]` here); `www/index.html` scans for them to build the DOM.
-    let program = vec![val(
-        pvar("x"),
-        Expr::Add(
-            Box::new(Expr::IntConst(1)),
-            Box::new(Expr::Highlighted(
-                Box::new(Expr::IntConst(2)),
-                HighlightColor::Yellow,
-            )),
-        ),
-    )];
-    assert_eq!(show(&program), "val x = 1 + [y2y]");
+fn breaks_a_let_over_lines_with_its_keywords_aligned() {
+    let program = parse("val y = let val a = 1 val b = 2 in a + b + a + b end");
+    // The `let` hugs the `=` rather than being pushed onto a line of its own, and
+    // `let`/`in`/`end` line up under each other wherever it landed.
+    assert_eq!(
+        show_at_width(&program, 40),
+        "\
+val y = let
+          val a = 1
+          val b = 2
+        in
+          a + b + a + b
+        end"
+    );
 }
 
 #[test]
-fn a_highlight_passes_its_position_through_to_what_it_wraps() {
-    // `Highlighted` is invisible to the precedence ladder: the wrapped expression
-    // is printed at the position the wrapper occupies, so a compound operand still
-    // gets the parens it needs — inside the sentinels, not outside them.
+fn breaks_a_case_with_its_bars_under_the_keyword() {
+    let program = parse("val x = case n of 0 => 1 | 1 => 2 | m => m * m + m * m");
+    assert_eq!(
+        show_at_width(&program, 40),
+        "\
+val x = case n of
+          0 => 1
+        | 1 => 2
+        | m => m * m + m * m"
+    );
+}
+
+#[test]
+fn breaks_an_application_with_its_arguments_aligned() {
+    // Applications nest to the left, so a group per `App` node would indent the
+    // *last* argument least. The spine is laid out as one group instead, so they
+    // all line up.
+    let program = parse("val x = foo (a + b) (c + d) (e + f) (g + h)");
+    assert_eq!(
+        show_at_width(&program, 24),
+        "\
+val x =
+    foo
+        (a + b)
+        (c + d)
+        (e + f)
+        (g + h)"
+    );
+}
+
+#[test]
+fn breaking_lines_never_changes_the_program() {
+    // The round-trip property has to survive layout: a break only ever replaces a
+    // space with a newline, and the lexer treats the two alike. Narrow widths are
+    // where every group is forced to break, so this is the strong version of the
+    // check the rest of this file makes at full width.
+    for src in [
+        "val y = let val a = 1 val b = 2 in a + b + a + b end",
+        "val f = fn n : int => if n = 0 then 1 else n * f (n - 1)",
+        "val x = case n of 0 => 1 | 1 => 2 | m => m * m + m * m",
+        "val x = foo (a + b) (c + d) (e + f) (g + h)",
+        "val rec f : int -> int = fn n : int => if n = 0 then 1 else n * f (n - 1)",
+        "val (a, b) : int * bool = (1 + 2 + 3 + 4 + 5, true andalso false)",
+    ] {
+        let program = parse(src);
+        for width in [8, 16, 24, 40, 80] {
+            let printed = show_at_width(&program, width);
+            assert_eq!(
+                parse(&printed),
+                program,
+                "at width {width}, `{src}` printed as:\n{printed}"
+            );
+        }
+    }
+}
+
+#[test]
+fn folds_a_lambda_to_its_parameter() {
+    let program = parse("val f = fn x : int => x + 1\nval y = f 2");
+    let ids = lambda_ids(&program);
+    assert_eq!(ids.len(), 1);
+    // The annotation goes with the body: the point of folding is to get the
+    // function out of the way, and its type is part of what's in the way.
+    assert_eq!(
+        show_folded(&program, &ids),
+        "val f = fn x => ...\nval y = f 2"
+    );
+    // Folding is display state, so the same program with an empty fold set prints
+    // in full — nothing was consumed.
+    assert_eq!(
+        show_folded(&program, &[]),
+        "val f = fn x : int => x + 1\nval y = f 2"
+    );
+}
+
+#[test]
+fn folding_the_inner_lambda_of_a_curried_function_leaves_the_outer_one() {
+    let program = parse("val f = fn x : int => fn y : int => x + y");
+    let ids = lambda_ids(&program);
+    assert_eq!(ids.len(), 2, "outermost first");
+    assert_eq!(show_folded(&program, &ids[1..]), "val f = fn x : int => fn y => ...");
+    assert_eq!(show_folded(&program, &ids[..1]), "val f = fn x => ...");
+}
+
+#[test]
+fn folding_one_copy_of_a_lambda_leaves_the_others_expanded() {
+    // Substituting a lambda into two use sites makes two independent nodes, so
+    // folding is per-copy: clicking the one in `a` doesn't touch the one in `b`.
+    let program = parse(
+        "val classify = fn n : int => n * 100\nval a = classify 1\nval b = classify 7",
+    );
+    let (program, _) = step_once(&program);
+    let ids = lambda_ids(&program);
+    assert_eq!(ids.len(), 2, "one lambda per use site, each its own node");
+    assert_eq!(
+        show_folded(&program, &ids[..1]),
+        "val a = (fn n => ...) 1\nval b = (fn n : int => n * 100) 7"
+    );
+    assert_eq!(
+        show_folded(&program, &ids[1..]),
+        "val a = (fn n : int => n * 100) 1\nval b = (fn n => ...) 7"
+    );
+}
+
+#[test]
+fn folding_changes_where_lines_break() {
+    // Folding isn't a CSS trick: it changes the node's width, so it changes the
+    // line-breaking of every group around it. That's why it's read while the
+    // document is built rather than applied to the finished output.
+    let program = parse("val y = (fn n : int => n + 1 + 1 + 1 + 1 + 1) 2");
+    let ids = lambda_ids(&program);
+    assert!(show_at_width(&program, 30).contains('\n'));
+    let folded = {
+        let mut view = stepper_core::view::ViewState::default();
+        view.width = 30;
+        view.collapsed = ids.iter().copied().collect();
+        stepper_core::pretty::pretty_print_marked(&program, &view)
+    };
+    assert_eq!(folded, "val y = (fn n => ...) 2");
+}
+
+#[test]
+fn marks_the_node_a_highlight_names() {
+    // A highlight is a `NodeId` in the view state, not a node in the tree, so
+    // marking one is a matter of naming it — the printer looks each node up as it
+    // goes.
+    let two = Expr::IntConst(2);
+    let id = two.id;
     let program = vec![val(
         pvar("x"),
-        Expr::Mul(
-            Box::new(Expr::IntConst(3)),
-            Box::new(Expr::Highlighted(
-                Box::new(Expr::Add(
-                    Box::new(Expr::IntConst(1)),
-                    Box::new(Expr::IntConst(2)),
-                )),
-                HighlightColor::Green,
-            )),
-        ),
+        Expr::Add(Box::new(Expr::IntConst(1)), Box::new(two)),
     )];
-    assert_eq!(show(&program), "val x = 3 * [g(1 + 2)g]");
+    assert_eq!(
+        show_highlighted(&program, id, HighlightColor::Yellow),
+        "val x = 1 + [y2y]"
+    );
+    // The same program with nothing highlighted is just the program: no residue
+    // is left in the tree to strip.
+    assert_eq!(show(&program), "val x = 1 + 2");
+}
+
+#[test]
+fn a_highlight_wraps_the_parens_its_node_needs() {
+    // Highlighting is invisible to the precedence ladder — it's applied to a node
+    // that has already decided how to print itself — so a compound operand still
+    // gets the parens it needs, and the marker goes outside them.
+    let sum = Expr::Add(
+        Box::new(Expr::IntConst(1)),
+        Box::new(Expr::IntConst(2)),
+    );
+    let id = sum.id;
+    let program = vec![val(
+        pvar("x"),
+        Expr::Mul(Box::new(Expr::IntConst(3)), Box::new(sum)),
+    )];
+    assert_eq!(
+        show_highlighted(&program, id, HighlightColor::Green),
+        "val x = 3 * [g(1 + 2)g]"
+    );
     assert_eq!(parse(&strip_markers(&pretty_print(&program))).len(), 1);
 }
 

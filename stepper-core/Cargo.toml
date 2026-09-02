@@ -13,6 +13,21 @@ lrpar = "0.13"
 cfgrammar = "0.13"
 console_error_panic_hook = "0.1"
 
+# Only the browser build needs the DOM bindings. Keeping them off the native
+# target is what keeps `cargo test` — the fast loop for interpreter work — from
+# compiling and linking any of this.
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
+version = "0.3"
+features = [
+    "Document",
+    "DomTokenList",
+    "Element",
+    "Node",
+    "NodeList",
+    "Text",
+    "Window",
+]
+
 [build-dependencies]
 lrlex = "0.13"
 lrpar = "0.13"

@@ -1,3 +1,5 @@
 /stepper-core/target
 /www/pkg
 /.deploy
+todo.txt
+Cargo.lock

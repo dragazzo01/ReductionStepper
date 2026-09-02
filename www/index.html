@@ -4,141 +4,166 @@
   <meta charset="utf-8" />
   <title>Reduction Stepper</title>
   <style>
-    .highlight-yellow {
-      background-color: #fff59d;
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 52rem;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      line-height: 1.5;
     }
-    .highlight-green {
-      background-color: #a5d6a7;
+
+    /* The program itself. Rust builds this subtree (see stepper-core/src/dom.rs);
+       everything below is just how the classes it emits should look. */
+    .program {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 1rem;
+      background: #fafafa;
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
+      padding: 1rem;
+      overflow-x: auto;
+      min-height: 3rem;
     }
-    .highlight-red {
-      background-color: #ef9a9a;
-    }
+
+    .kw { color: #7b1fa2; font-weight: 600; }
+    .op { color: #00695c; }
+    .lit { color: #1565c0; }
+    .var { color: #263238; }
+    .ty { color: #ad7000; }
+    .folded { color: #9e9e9e; }
+
+    .highlight-yellow { background-color: #fff59d; border-radius: 2px; }
+    .highlight-green { background-color: #a5d6a7; border-radius: 2px; }
+    .highlight-red { background-color: #ef9a9a; border-radius: 2px; }
+
+    /* Lambdas are click-to-fold. Rust marks them with `data-collapse`, which is
+       also what the click handler below reads to know which one was hit. */
+    .foldable { cursor: pointer; }
+    .foldable:hover { outline: 1px dotted #9e9e9e; outline-offset: 1px; }
+
+    .controls { margin: 1rem 0; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; width: 100%; }
+    #message { min-height: 1.5rem; color: #37474f; }
+    #message.error { color: #c62828; white-space: pre-wrap; }
+    details { margin-bottom: 1rem; }
   </style>
 </head>
 <body>
   <h1>Reduction Stepper</h1>
-  <p> This is my work in progress reduction stepper. In order to use it, simply enter a sequence of sml val 
-    declarations into the text box and hit enter formula. The expression which is about to be evaluated will be highlighted 
-    in yellow. In the event a substitution takes place, it will be highlighted green. 
-    <br>
-    A couple notes
-    <br>
-    1. you can only use the `val`/`val rec`/`fun` keyword for declarations
-    <br>
-    2. lambda's and must have their arguement type annotated and `val rec` must have the entire type annotated (my typechecker is not smart enough to infer types yet)
-    <br>
-    3. I support the following expressions: int constansts, bool constansts, +, -, ~, *, div, mod, comparisions, andalso, orelse, if...then...else, let...in...end, tuples, match expressions, lambdas, and function application
-    <br>
-    4. Pattern match should work for int constanst, bool constansts, tuples, wildcards, and identifiers. It should also work within lamdas (though the first arguement must still be type annotated)
-    <br>
-    5. For recursive lambda's I will sometimes rename the underlying symbol to make sure it is unique after the `val rec` is consumed.
-    <br>
-    6. the `fun` keyword will be elaborated into val/val rec as required. It also requires it's first clauses types annotated (and the return type if it is a recursive function)
-    <br>
-    As an example:
-    <br>
-    
-      val (x, z) = (5+ 5, 5 - 4)
-      <br>
-      val y = let val x = 5 in x * z end
-      <br>
-      val z = x + y
-      <br>
-      <br>
-      val rec fact : int -> int = fn 0 : int => 1 | x => x * fact (x - 1)
-      <br>
-  val a = fact 1
-  <br>
-val b = fact 2
-<br>
-val x = let val rec fact : int -> int = fn 0 : int => 0 | x => 1 + fact (x - 1) in fact 3 end
-<br>
-<br>
-fun fib (0 : int) : int = 1
-<br>
-  | fib 1 = 1
-  <br>
-  | fib n = fib (n - 1) + fib (n - 2)
-<br>
-  val _ = fib 3
-<br>
-  fun curriedAdd (x : int) (y : int) = x + y
-<br>
-  val _ = curriedAdd 1 2
-<br>  
-</p>
-  <textarea id="formula-input" placeholder="Enter program" rows="6" cols="60"></textarea>
-  <br>
-  <button id="formula-button">Enter formula</button>
-  <button id="step-button">Step</button>
-  <button id="run-button">Run to value</button>
 
-  <pre id="output"></pre>
+  <p>
+    Enter a sequence of SML <code>val</code> declarations and hit Step to watch them
+    reduce one redex at a time. The expression about to be evaluated is highlighted
+    in yellow; anything a substitution just placed is highlighted in green.
+    <strong>Click any <code>fn</code> to fold it away</strong> — folding is
+    display-only, so the program underneath keeps stepping as it was.
+  </p>
+
+  <details>
+    <summary>What the language supports</summary>
+    <ol>
+      <li>Declarations use <code>val</code>, <code>val rec</code> or <code>fun</code>.</li>
+      <li>Lambdas must annotate their parameter, and <code>val rec</code> must
+        annotate the whole type — there's no inference engine yet.</li>
+      <li>Expressions: int and bool constants, <code>+ - ~ * div mod</code>,
+        comparisons, <code>andalso</code>, <code>orelse</code>,
+        <code>if…then…else</code>, <code>let…in…end</code>, tuples,
+        <code>case</code>, lambdas, and application.</li>
+      <li>Patterns: int and bool constants, tuples, wildcards and identifiers —
+        in <code>val</code>, in <code>case</code> arms and as lambda parameters.</li>
+      <li><code>fun</code> is elaborated into <code>val</code>/<code>val rec</code>,
+        so you get to watch the desugaring. Its first clause needs its argument
+        types annotated (and the result type too, if it's recursive).</li>
+    </ol>
+  </details>
+
+  <div class="controls">
+    <label>
+      Example
+      <select id="example-select">
+        <option value="">Loading…</option>
+      </select>
+    </label>
+  </div>
+
+  <textarea id="formula-input" placeholder="Enter program" rows="8"></textarea>
+
+  <div class="controls">
+    <button id="formula-button">Enter formula</button>
+    <button id="step-button">Step</button>
+    <button id="run-button">Run to value</button>
+    <label>
+      Width
+      <input id="width-input" type="range" min="20" max="120" value="90" />
+      <span id="width-value">90</span>
+    </label>
+  </div>
+
   <p id="message"></p>
+  <div id="output" class="program"></div>
+  
 
   <script type="module">
-    import init, { enter_formula, step_formula, current_render } from "./pkg/stepper_core.js";
+    // The whole display is built on the Rust side: `render_program` hands back a
+    // real <pre> element, already laid out to the current width and already
+    // carrying its highlight and fold state. There is no program rendering logic
+    // in this file — only wiring.
+    import init, {
+      enter_formula,
+      step_formula,
+      render_program,
+      toggle_collapse,
+      set_width,
+    } from "./pkg/stepper_core.js";
 
-    // Must match the sentinel pairs in stepper-core/src/pretty.rs (one pair per
-    // HighlightColor). Regions can nest (e.g. yellow wrapping a redex that itself
-    // contains green-marked values), but a color's own start/end pair never repeats
-    // inside itself, so scanning for the nearest start marker and its first matching
-    // end marker, recursing into whatever text is between them, is enough.
-    const HIGHLIGHT_COLORS = [
-      { name: "yellow", start: "\uE000", end: "\uE001" },
-      { name: "green", start: "\uE002", end: "\uE003" },
-      { name: "red", start: "\uE004", end: "\uE005" },
-    ];
+    const output = () => document.getElementById("output");
+    const messageEl = () => document.getElementById("message");
 
-    // Appends `text` to `container` as text nodes and nested <span> elements per any
-    // highlight markers found, recursing so nested regions become nested elements.
-    function appendRendered(container, text) {
-      let rest = text;
-      while (rest.length > 0) {
-        let next = null;
-        for (const color of HIGHLIGHT_COLORS) {
-          const idx = rest.indexOf(color.start);
-          if (idx !== -1 && (next === null || idx < next.idx)) {
-            next = { idx, color };
-          }
-        }
-        if (next === null) {
-          container.appendChild(document.createTextNode(rest));
-          return;
-        }
-
-        if (next.idx > 0) {
-          container.appendChild(document.createTextNode(rest.slice(0, next.idx)));
-        }
-        const afterStart = rest.slice(next.idx + 1);
-        const endIdx = afterStart.indexOf(next.color.end);
-
-        const span = document.createElement("span");
-        span.className = `highlight-${next.color.name}`;
-        appendRendered(span, afterStart.slice(0, endIdx));
-        container.appendChild(span);
-
-        rest = afterStart.slice(endIdx + 1);
-      }
+    function draw() {
+      output().replaceChildren(render_program());
     }
 
-    function renderOutput(text) {
-      const output = document.getElementById("output");
-      output.textContent = "";
-      appendRendered(output, text);
+    function say(text, isError = false) {
+      const el = messageEl();
+      el.textContent = text;
+      el.classList.toggle("error", isError);
     }
 
-    const default_input = `
-    val (x, z) = (5+ 5, 5 - 4)
-    val y = let val x = 5 in x * z end
-    val z = x + y
-    `
+    // Sample programs live in `examples.txt` next door, in a format simple enough
+    // to read from both sides: a line starting with "#" names the example that
+    // follows it. `stepper-core/tests/examples.rs` steps every one of them to a
+    // value, so anything offered here is known to work.
+    function parseExamples(text) {
+        const examples = [];
+        for (const line of text.split("\n")) {
+            if (line.startsWith("#")) {
+                examples.push({ name: line.slice(1).trim(), source: "" });
+            } else if (examples.length > 0) {
+                examples[examples.length - 1].source += line + "\n";
+            }
+        }
+        // The file opens with a comment block, which leaves entries with no
+        // program under them.
+        return examples
+            .map((e) => ({ name: e.name, source: e.source.trim() }))
+            .filter((e) => e.source !== "");
+    }
+
+    let examples = [];
+
+    function loadExample(index) {
+        const example = examples[index];
+        if (example === undefined) return;
+        stopRun();
+        document.getElementById("formula-input").value = example.source;
+        const problem = enter_formula(example.source);
+        draw();
+        say(problem, problem !== "");
+    }
 
     let runInterval = null;
 
-    function isRunning() {
-      return runInterval !== null;
-    }
+    const isRunning = () => runInterval !== null;
 
     function setRunning(running) {
       document.getElementById("run-button").textContent = running ? "Stop" : "Run to value";
@@ -154,22 +179,22 @@ fun fib (0 : int) : int = 1
       setRunning(false);
     }
 
-    // Runs one step and updates the display. Returns false (and stops any run in
-    // progress) if the step panicked or there was nothing left to do, so the
-    // interval driving "Run to value" knows to stop rather than hammering a wasm
-    // instance a panic may have left broken.
+    // Runs one step and redraws. Returns false (and stops any run in progress) if
+    // the step panicked or there was nothing left to do, so the interval driving
+    // "Run to value" knows to stop rather than hammering a wasm instance a panic
+    // may have left broken.
     function doStep() {
       let message;
       try {
         message = step_formula();
       } catch (e) {
-        document.getElementById("message").textContent = `Error: ${e}`;
+        say(`Error: ${e}`, true);
         stopRun();
         return false;
       }
-      renderOutput(current_render());
-      document.getElementById("message").textContent = message;
-      if (message === "No more steps." || message === "Enter program") {
+      draw();
+      say(message);
+      if (message === "No more steps." || message === "Enter a formula first.") {
         stopRun();
         return false;
       }
@@ -178,11 +203,14 @@ fun fib (0 : int) : int = 1
 
     async function main() {
       await init();
+
       document.getElementById("formula-button").addEventListener("click", () => {
         stopRun();
-        const formula = document.getElementById("formula-input").value || default_input;
-        renderOutput(enter_formula(formula));
-        document.getElementById("message").textContent = "";
+        const formula = document.getElementById("formula-input").value;
+        // Empty means it parsed and typechecked; anything else is the complaint.
+        const problem = enter_formula(formula);
+        draw();
+        say(problem, problem !== "");
       });
 
       document.getElementById("step-button").addEventListener("click", doStep);
@@ -195,6 +223,42 @@ fun fib (0 : int) : int = 1
         setRunning(true);
         runInterval = setInterval(doStep, 500);
       });
+
+      // One listener for every foldable node, now and after any redraw, rather
+      // than one per node re-attached each time: the click walks up to the
+      // nearest element Rust marked with `data-collapse` and sends its id back.
+      output().addEventListener("click", (event) => {
+        const target = event.target.closest("[data-collapse]");
+        if (target === null) return;
+        toggle_collapse(Number(target.getAttribute("data-collapse")));
+        // Folding changes the node's width, so the surrounding line breaks have
+        // to be recomputed — hence a redraw rather than a class toggle.
+        draw();
+      });
+
+      const widthInput = document.getElementById("width-input");
+      widthInput.addEventListener("input", () => {
+        document.getElementById("width-value").textContent = widthInput.value;
+        set_width(Number(widthInput.value));
+        draw();
+      });
+
+      set_width(Number(widthInput.value));
+
+      const select = document.getElementById("example-select");
+      select.addEventListener("change", () => loadExample(Number(select.value)));
+      try {
+        examples = parseExamples(await (await fetch("./examples.txt")).text());
+        select.replaceChildren(
+          ...examples.map((example, i) => new Option(example.name, String(i)))
+        );
+        loadExample(0);
+      } catch (e) {
+        // Most likely cause: the page was opened as a file:// URL, which blocks
+        // both fetch and the ES module import above. Serve it (`make serve`).
+        select.replaceChildren(new Option("could not load examples.txt", ""));
+        say(`Could not load examples.txt: ${e}`, true);
+      }
     }
 
     main();

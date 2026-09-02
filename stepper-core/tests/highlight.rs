@@ -30,6 +30,26 @@ fn highlights_a_finished_decl_that_is_about_to_be_substituted() {
 }
 
 #[test]
+fn marks_only_the_copy_being_reduced() {
+    // Substituting a lambda into two use sites makes two *independent* copies —
+    // each gets its own node ids (`subst::fresh_copy`). Without that they shared
+    // ids, and since a highlight is a `NodeId`, marking the redex inside one copy
+    // painted the identical spot in the other:
+    //
+    //     val a = [y1 * 100y]
+    //     val b = (fn n : int => [yn * 100y]) 7    <- not being evaluated
+    let program = parse(
+        "val classify = fn n : int => n * 100\nval a = classify 1\nval b = classify 7",
+    );
+    let (program, _) = step_once(&program); // substitute `classify` into both uses
+    let (program, _) = step_once(&program); // apply the copy in `a`
+    assert_eq!(
+        render_next(&program),
+        "val a = [y[g1g] * 100y]\nval b = (fn n : int => n * 100) 7"
+    );
+}
+
+#[test]
 fn highlights_nothing_once_the_program_is_fully_reduced() {
     let program = parse("val x = 15150");
     assert_eq!(stepping::highlight_next(&program), None);
