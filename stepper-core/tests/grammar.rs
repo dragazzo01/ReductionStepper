@@ -5,7 +5,8 @@
 mod common;
 
 use common::*;
-use stepper_core::ast::{Decl, Expr, PatternBase, Type};
+use common::expr_builders::Expr;
+use stepper_core::ast::{Decl, ExprKind, PatternBase, Type};
 use stepper_core::parse_program;
 
 #[test]
@@ -288,7 +289,8 @@ fn parses_let_in_end() {
 
 #[test]
 fn let_supports_multiple_decls() {
-    let Expr::Let(decls, _) = expr_of("val y = let val x = 1 val z = 2 in x + z end") else {
+    let ExprKind::Let(decls, _) = expr_of("val y = let val x = 1 val z = 2 in x + z end").kind
+    else {
         panic!("expected a Let");
     };
     assert_eq!(decls.len(), 2);
@@ -459,7 +461,8 @@ fn a_type_annotation_belongs_to_the_pattern_it_follows() {
 fn parses_literal_patterns_including_negative_ints() {
     // `~` in a pattern is part of the literal (there's no negation to evaluate in
     // a pattern), so `~1` is one `IntConst(-1)` rather than a `Neg` node.
-    let Expr::Match(_, arms) = expr_of("val x = case n of ~1 => 0 | true => 1 | 2 => 2") else {
+    let ExprKind::Match(_, arms) = expr_of("val x = case n of ~1 => 0 | true => 1 | 2 => 2").kind
+    else {
         panic!("expected a Match");
     };
     let patterns: Vec<_> = arms.into_iter().map(|(p, _)| p).collect();

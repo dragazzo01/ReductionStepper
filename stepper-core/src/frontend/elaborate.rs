@@ -19,7 +19,7 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 
-use super::ast::{Decl, Expr, Pattern, PatternBase, Type, ValDecl};
+use super::ast::{Binder, Decl, Expr, ExprKind, Pattern, PatternBase, Type, ValDecl};
 
 /// One clause of a `fun` declaration: `name p1 p2 ... : result_ty = body`, with
 /// the result type present only if the clause was written with one.
@@ -39,7 +39,7 @@ pub fn fun_decl(clauses: Vec<FunClause>, errors: &RefCell<Vec<String>>) -> Decl 
         errors.borrow_mut().push(message);
         Decl::ValDecl(ValDecl {
             pat: Pattern::untyped(PatternBase::Wildcard),
-            expr: Expr::IntConst(0),
+            expr: Expr::new(ExprKind::IntConst(0)),
         })
     })
 }
@@ -87,10 +87,7 @@ fn elaborate(clauses: Vec<FunClause>) -> Result<Decl, String> {
     // over-reporting just means asking for an annotation that `val rec` can use,
     // never a wrong binding.
     let recursive = clauses.iter().any(|clause| mentions(&clause.body, &name));
-    let pat = |typ| Pattern {
-        pat: PatternBase::Ident(name.clone()),
-        typ,
-    };
+    let pat = |typ| Pattern::new(PatternBase::Var(Binder::new(name.clone())), typ);
     if recursive {
         let Some(typ) = fn_ty else {
             return Err(format!(
@@ -156,12 +153,12 @@ fn function_type(param_tys: &[Option<Type>], result_ty: Option<Type>) -> Option<
 /// first, which is what the fresh variables are for.
 fn lambda_of(clauses: &[FunClause], param_tys: &[Option<Type>], name: &str) -> Result<Expr, String> {
     if param_tys.len() == 1 {
-        return Ok(Expr::Lambda(
+        return Ok(Expr::new(ExprKind::Lambda(
             clauses
                 .iter()
                 .map(|clause| (clause.params[0].clone(), clause.body.clone()))
                 .collect(),
-        ));
+        )));
     }
     if let [only] = clauses {
         return Ok(curry(&only.params, only.body.clone()));
@@ -184,21 +181,23 @@ fn lambda_of(clauses: &[FunClause], param_tys: &[Option<Type>], name: &str) -> R
                     "`{name}` has several clauses and several arguments, so it needs each argument of its first clause annotated: `fun {name} (x : int) (y : int) = ...`"
                 ));
             };
-            Ok(Pattern {
-                pat: PatternBase::Ident(fresh_name(&mut taken, i)),
-                typ: Some(typ),
-            })
+            Ok(Pattern::new(
+                PatternBase::Var(Binder::new(fresh_name(&mut taken, i))),
+                Some(typ),
+            ))
         })
         .collect::<Result<Vec<_>, String>>()?;
 
-    let scrutinee = Expr::Tuple(
+    // A fresh `Binder` per use, same as the grammar mints for any other
+    // identifier; `frontend::resolve` points these at the parameters above.
+    let scrutinee = Expr::new(ExprKind::Tuple(
         args.iter()
             .map(|arg| match &arg.pat {
-                PatternBase::Ident(name) => Expr::Ident(name.clone()),
+                PatternBase::Var(binder) => Expr::var(Binder::new(binder.name.clone())),
                 _ => unreachable!("fresh arguments are always identifiers"),
             })
             .collect(),
-    );
+    ));
     let arms = clauses
         .iter()
         .map(|clause| {
@@ -208,23 +207,29 @@ fn lambda_of(clauses: &[FunClause], param_tys: &[Option<Type>], name: &str) -> R
             )
         })
         .collect();
-    Ok(curry(&args, Expr::Match(Box::new(scrutinee), arms)))
+    Ok(curry(
+        &args,
+        Expr::new(ExprKind::Match(Box::new(scrutinee), arms)),
+    ))
 }
 
 /// `fn p1 => fn p2 => ... => body`: one single-case `fn` per parameter, which is
 /// what makes a multi-argument function partially applicable, exactly as in SML.
 fn curry(params: &[Pattern], body: Expr) -> Expr {
-    params
-        .iter()
-        .rev()
-        .fold(body, |body, param| Expr::Lambda(vec![(param.clone(), body)]))
+    params.iter().rev().fold(body, |body, param| {
+        Expr::new(ExprKind::Lambda(vec![(param.clone(), body)]))
+    })
 }
 
 /// A name for the `i`th argument of the general derived form — `argA`, `argB`, ...
 /// — lengthened until it collides with nothing `taken` from the clauses. These
 /// names are visible in the stepped program and have to be re-enterable as source,
-/// so they're letters only, like every other generated name (see
-/// `stepping`'s `alpha_suffix`).
+/// so they're letters only.
+///
+/// Note this runs inside a grammar action, i.e. before `resolve` exists to give
+/// anything a binder id, so avoiding a collision here really is a matter of
+/// picking an unused *spelling* — unlike the stepper, which used to have to do
+/// the same thing and no longer does.
 fn fresh_name(taken: &mut HashSet<String>, i: usize) -> String {
     let mut candidate = format!("arg{}", (b'A' + (i % 26) as u8) as char);
     while taken.contains(&candidate) {
@@ -245,35 +250,35 @@ fn mentions(expr: &Expr, name: &str) -> bool {
 /// here want opposite things from a *use*: `mentions` is looking for exactly those,
 /// and `fresh_name` must avoid capturing one.
 fn collect_names(expr: &Expr, out: &mut HashSet<String>) {
-    match expr {
-        Expr::IntConst(_) | Expr::BoolConst(_) => {}
-        Expr::Ident(name) => {
-            out.insert(name.clone());
+    match &expr.kind {
+        ExprKind::IntConst(_) | ExprKind::BoolConst(_) => {}
+        ExprKind::Var(binder) => {
+            out.insert(binder.name.clone());
         }
-        Expr::Neg(inner) | Expr::Highlighted(inner, _) => collect_names(inner, out),
-        Expr::Add(l, r)
-        | Expr::Sub(l, r)
-        | Expr::Mul(l, r)
-        | Expr::Div(l, r)
-        | Expr::Mod(l, r)
-        | Expr::Eq(l, r)
-        | Expr::Ne(l, r)
-        | Expr::Lt(l, r)
-        | Expr::Le(l, r)
-        | Expr::Gt(l, r)
-        | Expr::Ge(l, r)
-        | Expr::AndAlso(l, r)
-        | Expr::OrElse(l, r)
-        | Expr::App(l, r) => {
+        ExprKind::Neg(inner) => collect_names(inner, out),
+        ExprKind::Add(l, r)
+        | ExprKind::Sub(l, r)
+        | ExprKind::Mul(l, r)
+        | ExprKind::Div(l, r)
+        | ExprKind::Mod(l, r)
+        | ExprKind::Eq(l, r)
+        | ExprKind::Ne(l, r)
+        | ExprKind::Lt(l, r)
+        | ExprKind::Le(l, r)
+        | ExprKind::Gt(l, r)
+        | ExprKind::Ge(l, r)
+        | ExprKind::AndAlso(l, r)
+        | ExprKind::OrElse(l, r)
+        | ExprKind::App(l, r) => {
             collect_names(l, out);
             collect_names(r, out);
         }
-        Expr::If(cond, then_branch, else_branch) => {
+        ExprKind::If(cond, then_branch, else_branch) => {
             collect_names(cond, out);
             collect_names(then_branch, out);
             collect_names(else_branch, out);
         }
-        Expr::Let(decls, body) => {
+        ExprKind::Let(decls, body) => {
             for decl in decls {
                 let ValDecl { pat, expr } = decl.get_val_decl();
                 collect_pattern_names(pat, out);
@@ -281,12 +286,12 @@ fn collect_names(expr: &Expr, out: &mut HashSet<String>) {
             }
             collect_names(body, out);
         }
-        Expr::Tuple(items) => items.iter().for_each(|item| collect_names(item, out)),
-        Expr::Match(scrutinee, arms) => {
+        ExprKind::Tuple(items) => items.iter().for_each(|item| collect_names(item, out)),
+        ExprKind::Match(scrutinee, arms) => {
             collect_names(scrutinee, out);
             collect_cases(arms, out);
         }
-        Expr::Lambda(cases) => collect_cases(cases, out),
+        ExprKind::Lambda(cases) => collect_cases(cases, out),
     }
 }
 
@@ -298,13 +303,5 @@ fn collect_cases(cases: &[(Pattern, Expr)], out: &mut HashSet<String>) {
 }
 
 fn collect_pattern_names(pat: &Pattern, out: &mut HashSet<String>) {
-    match &pat.pat {
-        PatternBase::Ident(name) => {
-            out.insert(name.clone());
-        }
-        PatternBase::Wildcard | PatternBase::IntConst(_) | PatternBase::BoolConst(_) => {}
-        PatternBase::Tuple(pats) => pats
-            .iter()
-            .for_each(|p| collect_pattern_names(p, out)),
-    }
+    out.extend(pat.binders().into_iter().map(|b| b.name.clone()));
 }

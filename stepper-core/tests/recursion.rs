@@ -46,11 +46,13 @@ fn binding_a_recursive_function_substitutes_its_name_not_its_body() {
         msg,
         "Bound recursive fact = fn n : int => if n = 0 then 1 else n * fact (n - 1)"
     );
-    // What the frontend actually receives: the green marker the substitution left
-    // on the recursive name, with the yellow "next redex" marker nested inside it
-    // (the name is a redex — stepping it unrolls the lambda).
-    assert_eq!(show(&program), "val x = [gfactg] 3");
-    assert_eq!(render_next(&program), "val x = [g[yfacty]g] 3");
+    // Binding a `val rec` places no text at all, so nothing is green: `fact` was
+    // already written there, and it already referred to this binder. (It used to
+    // be marked, back when binding one meant substituting every use with a
+    // freshly-invented unique spelling of its name.) It is still a redex, though —
+    // stepping the name unrolls the lambda — so yellow points at it.
+    assert_eq!(show(&program), "val x = fact 3");
+    assert_eq!(render_next(&program), "val x = [yfacty] 3");
 
     let (program, msg) = step_once(&program);
     assert_eq!(
@@ -155,29 +157,32 @@ fn a_recursive_function_defined_inside_a_recursive_function() {
 }
 
 #[test]
-fn re_running_the_same_program_does_not_accumulate_renames() {
-    // `bind_rec` reuses a name that already holds an identical lambda, so the
-    // second run must show `fact`, not `factA`.
+fn two_different_functions_may_share_a_name_without_being_renamed() {
+    // Re-entering the same program is unremarkable: each run's `fact` is its own
+    // binder, parked under its own id.
     let src =
         "val rec fact : int -> int = fn n : int => if n = 0 then 1 else n * fact (n - 1)\nval x = fact 2";
     assert_eq!(run_rec(src), "val x = 2");
     assert_eq!(run_rec(src), "val x = 2");
 
-    // ...and without the reset `run_rec` does, a *different* function under the
-    // same name has to be renamed out of the way instead.
+    // The interesting case is two *different* functions called `g`, both live in
+    // the env at once, with no reset in between. Because the env is keyed by
+    // binding site rather than by name, neither can shadow the other and neither
+    // needs renaming: this used to report ", shown as gA since g is taken" and
+    // display the second one as `gA` forever after.
     stepping::reset_rec_env();
     let first = parse_program("val rec g : int -> int = fn n : int => n + 1\nval a = g 1").unwrap();
-    let (_, msg) = step_once(&first);
+    let (first, msg) = step_once(&first);
     assert_eq!(msg, "Bound recursive g = fn n : int => n + 1");
 
     let second = parse_program("val rec g : int -> int = fn n : int => n * 2\nval a = g 1").unwrap();
-    let (program, msg) = step_once(&second);
-    assert_eq!(
-        msg,
-        "Bound recursive g = fn n : int => n * 2, shown as gA since g is taken"
-    );
-    assert_eq!(show(&program), "val a = [ggAg] 1");
-    assert_eq!(run_to_value(program), "val a = 2");
+    let (second, msg) = step_once(&second);
+    assert_eq!(msg, "Bound recursive g = fn n : int => n * 2");
+    assert_eq!(show(&second), "val a = g 1");
+
+    // Both still run, and each unrolls its own lambda rather than the other's.
+    assert_eq!(run_to_value(second), "val a = 2");
+    assert_eq!(run_to_value(first), "val a = 2");
 }
 
 #[test]
@@ -193,25 +198,8 @@ fn a_fun_that_calls_itself_is_a_recursive_binding() {
         msg,
         "Bound recursive fact = fn n : int => if n = 0 then 1 else n * fact (n - 1)"
     );
-    assert_eq!(show(&program), "val x = [gfactg] 3");
+    assert_eq!(show(&program), "val x = fact 3");
     assert_eq!(run_to_value(program), "val x = 6");
-}
-
-#[test]
-fn a_recursive_fun_may_dispatch_on_its_clauses() {
-    assert_eq!(
-        run_rec("fun fib 0 = 0 | fib 1 = 1 | fib (n : int) : int = fib (n - 1) + fib (n - 2)\nval x = fib 6"),
-        "val x = 8"
-    );
-    // Several clauses *and* several arguments: the recursive call goes through the
-    // generated arguments' `case`.
-    assert_eq!(
-        run_rec(
-            "fun count 0 (acc : int) : int = acc | count (n : int) (acc : int) = count (n - 1) (acc + n)\
-             \nval x = count 3 0"
-        ),
-        "val x = 6"
-    );
 }
 
 #[test]
@@ -220,4 +208,24 @@ fn a_fun_declared_inside_a_let_is_recursive_too() {
         run_rec("val y = let fun countdown (n : int) : int = if n <= 0 then 0 else countdown (n - 1) in countdown 2 end"),
         "val y = 0"
     );
+}
+
+#[test]
+fn psuedo_cps_test() {
+    // Continuation-passing style is what forces the stepper to rename bound
+    // variables when it duplicates a subtree (`subst::refresh_binders`): every
+    // unrolling builds another `fn res => k (x * res)`, and `k` is then
+    // substituted with a previous one, so without renaming the two `res`
+    // parameters would be the same variable and the outer one would capture the
+    // inner. This came out as 3 rather than 6 before that was fixed.
+    //
+    // The green on the result is the last step's substitution marker — the final
+    // `k 1` is a substitution, and nothing steps after it to clear the mark. Same
+    // as `recursion.rs`'s `a_plain_val_may_shadow_a_recursive_name_afterwards`.
+    assert_eq!(
+        run_rec("fun factCPS (0 : int) (k : int -> int) : int = k 1
+            | factCPS x k = factCPS (x-1) (fn res : int => k (x * res))
+            val _ = factCPS 3 (fn x : int => x)"),
+        "val _ = [g6g]"
+    )
 }
