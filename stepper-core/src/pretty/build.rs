@@ -36,7 +36,7 @@ fn op(s: &str) -> Doc {
 }
 
 fn lit(s: String) -> Doc {
-    Doc::ann(Ann::Class("lit"), Doc::Text(s))
+    Doc::ann(Ann::Class("lit"), Doc::text(s))
 }
 
 fn var(s: &str) -> Doc {
@@ -167,12 +167,8 @@ pub(super) fn type_string(ty: &Type) -> String {
             .map(|t| type_atom_string(t))
             .collect::<Vec<_>>()
             .join(" * "),
-        // Right-associative, matching the grammar's `%right 'ARROW'`: the left
-        // operand needs parens to nest (`(int -> int) -> int` prints bare, but the
-        // same tree on the right — `int -> (int -> int)`, only reachable via
-        // explicit parens in the source — would reparse as flat right-associative
-        // `int -> int -> int` without them, so the right operand always prints
-        // bare and the left always goes through the parenthesizing atom form).
+        // Right-associative, so atom string ensures left properly prints parens 
+        // in the event to (t1 -> t2) -> t3 but not t1 -> t2 -> t3
         Type::Arrow(param, result) => {
             format!("{} -> {}", type_atom_string(param), type_string(result))
         }
@@ -180,12 +176,7 @@ pub(super) fn type_string(ty: &Type) -> String {
 }
 
 /// Prints `ty` parenthesized if it wouldn't otherwise round-trip as one element of
-/// a `*`-separated list or as the left operand of `->`. A nested `Product` needs
-/// parens — `(int * bool) * int` printed bare as `int * bool * int` would reparse
-/// as one flat 3-tuple instead of a 2-tuple whose first component is itself a
-/// 2-tuple. An `Arrow` always needs parens here too: as a product component
-/// (`*` binds tighter than `->`) or as `->`'s left operand (right-associative, so
-/// only the right side can print bare). `Int`/`Bool` never need them.
+/// a `*`-separated list or as the left operand of `->`.
 fn type_atom_string(ty: &Type) -> String {
     match ty {
         Type::Product(_) | Type::Arrow(_, _) => format!("({})", type_string(ty)),

@@ -61,4 +61,4 @@ The other structural rule is SML's `atexp`/`exp` split, which is how function ap
 
 
 ## Style
-Please keep very long comments to a minimum. In particular if you are making a very small modification to a file for a bug fix, do not leave a very long comment on exactly what bug this line deals with if it is a small change which produces the correct behavior just leave it as it. The only place where there should be particularly long comment blocks is at the top of files and describing functions. 
+Please keep very long comments to a minimum. In particular if you are making a very small modification to a file for a bug fix, do not leave a very long comment on exactly what bug this line deals with if it is a small change which produces the correct behavior just make the change which I will review. The only place where there should be particularly long comment blocks is at the top of files and describing functions. 
