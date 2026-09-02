@@ -245,10 +245,13 @@ fn lower_exp(exp: &ast::Exp) -> Result<Expr> {
                 .exp_args()
                 .map(|arg| lower_exp(&require(arg.exp(), arg.syntax(), "an expression")?))
                 .collect::<Result<Vec<_>>>()?;
-            if items.is_empty() {
-                return unsupported(e.syntax(), "unit values `()`");
+            // `()` is the 0-tuple. Millet gives it the same node as any other
+            // tuple; one-element tuples don't exist (those are `ParenExp`), so
+            // this is the only case where a `TupleExp` isn't a `Tuple`.
+            match items.is_empty() {
+                true => ExprKind::Unit,
+                false => ExprKind::Tuple(items),
             }
-            ExprKind::Tuple(items)
         }
         // `~e` is an ordinary application of `~` in SML, and that is how millet
         // parses it. `~5` never reaches here — the lexer makes it one negative
@@ -373,10 +376,10 @@ fn lower_pat(pat: &ast::Pat) -> Result<Pattern> {
                 .pat_args()
                 .map(|arg| lower_pat(&require(arg.pat(), arg.syntax(), "a pattern")?))
                 .collect::<Result<Vec<_>>>()?;
-            if items.is_empty() {
-                return unsupported(p.syntax(), "unit patterns `()`");
+            match items.is_empty() {
+                true => PatternBase::Unit,
+                false => PatternBase::Tuple(items),
             }
-            PatternBase::Tuple(items)
         }
         // The annotation attaches to the pattern already built, keeping its id —
         // `x` and `x : int` are the same place on screen.
@@ -417,6 +420,7 @@ fn lower_ty(ty: &ast::Ty) -> Result<Type> {
             match single_name(&path, t.syntax())?.as_str() {
                 "int" => Ok(Type::Int),
                 "bool" => Ok(Type::Bool),
+                "unit" => Ok(Type::Unit),
                 name => unsupported(t.syntax(), &format!("the type `{name}`")),
             }
         }

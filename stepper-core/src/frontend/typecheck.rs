@@ -21,7 +21,9 @@ fn same_type(typ1: &Type, typ2: &Type) -> bool {
     typ1 == typ2
 }
 
-/// Every binary operator takes two ints — they differ only in what they produce.
+/// What a binary operator produces. Its *operands* are two ints for all of these
+/// but `=` and `<>`, which take any one equality type — see `is_equality_type`
+/// and the `BinOp` arms of `infer_expr_type`.
 fn binop_result_type(op: BinOp) -> Type {
     match op {
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => Type::Int,
@@ -29,10 +31,26 @@ fn binop_result_type(op: BinOp) -> Type {
     }
 }
 
+/// Whether values of `ty` can be compared with `=` and `<>`.
+///
+/// SML calls these the *equality types*, and admits them structurally: the base
+/// types are comparable, a tuple is comparable when every component is, and a
+/// function never is — there's no way to decide whether two of them agree on
+/// every argument. (Real SML also excludes `real`, for a different reason: `nan`
+/// isn't equal to itself. This subset has no reals to exclude.)
+fn is_equality_type(ty: &Type) -> bool {
+    match ty {
+        Type::Int | Type::Bool | Type::Unit => true,
+        Type::Product(parts) => parts.iter().all(|part| is_equality_type(part)),
+        Type::Arrow(..) => false,
+    }
+}
+
 fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
     match &expr.kind {
         ExprKind::IntConst(_) => Ok(Type::Int),
         ExprKind::BoolConst(_) => Ok(Type::Bool),
+        ExprKind::Unit => Ok(Type::Unit),
         // A use `resolve` found no binder for keeps the id it was minted with,
         // which nothing else shares — so it misses here, and this is where an
         // unbound identifier is reported.
@@ -41,6 +59,20 @@ fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
             .cloned()
             .ok_or_else(|| format!("Unbound identifier: {}", binder.name)),
 
+        // `=` and `<>` are the polymorphic pair: their operands may be of any one
+        // equality type, so the left one's type is inferred and the right is
+        // checked against it. Every other operator is arithmetic on two ints.
+        ExprKind::BinOp(op @ (BinOp::Eq | BinOp::Ne), e1, e2) => {
+            let operand_type = infer_expr_type(env, e1)?;
+            check_expr_type(env, e2, &operand_type)?;
+            if !is_equality_type(&operand_type) {
+                return Err(format!(
+                    "`{}` needs an equality type, but {operand_type:?} is not one",
+                    op.symbol()
+                ));
+            }
+            Ok(binop_result_type(*op))
+        }
         ExprKind::BinOp(op, e1, e2) => {
             check_expr_type(env, e1, &Type::Int)?;
             check_expr_type(env, e2, &Type::Int)?;
@@ -162,6 +194,13 @@ fn check_pattern_type(pattern: &Pattern, expected_type: &Type) -> Result<(), Str
                 Err(format!("Expected {expected_type:?} for bool pattern"))
             }
         }
+        PatternBase::Unit => {
+            if same_type(expected_type, &Type::Unit) {
+                Ok(())
+            } else {
+                Err(format!("Expected {expected_type:?} for unit pattern"))
+            }
+        }
         PatternBase::Var(_) | PatternBase::Wildcard => Ok(()),
         PatternBase::Tuple(pats) => {
             let Type::Product(expected_typs) = expected_type else {
@@ -199,7 +238,10 @@ fn bind_pattern(
 ) -> Result<(), String> {
     check_pattern_type(pat, ty)?;
     match &pat.pat {
-        PatternBase::Wildcard | PatternBase::IntConst(_) | PatternBase::BoolConst(_) => Ok(()),
+        PatternBase::Wildcard
+        | PatternBase::IntConst(_)
+        | PatternBase::BoolConst(_)
+        | PatternBase::Unit => Ok(()),
         PatternBase::Var(binder) => {
             if !seen.insert(binder.name.clone()) {
                 return Err(format!(

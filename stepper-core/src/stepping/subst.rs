@@ -114,6 +114,7 @@ fn renamed_expr(expr: &Expr, renaming: &HashMap<BinderId, BinderId>) -> Expr {
         ExprKind::Var(binder) => ExprKind::Var(renamed_binder(binder, renaming)),
         ExprKind::IntConst(n) => ExprKind::IntConst(*n),
         ExprKind::BoolConst(b) => ExprKind::BoolConst(*b),
+        ExprKind::Unit => ExprKind::Unit,
         ExprKind::BinOp(op, l, r) => ExprKind::BinOp(*op, recur(l), recur(r)),
         ExprKind::Neg(inner) => ExprKind::Neg(recur(inner)),
         ExprKind::AndAlso(l, r) => ExprKind::AndAlso(recur(l), recur(r)),
@@ -172,7 +173,7 @@ pub(super) fn substitute(
             }
             return expr.clone();
         }
-        ExprKind::IntConst(_) | ExprKind::BoolConst(_) => return expr.clone(),
+        ExprKind::IntConst(_) | ExprKind::BoolConst(_) | ExprKind::Unit => return expr.clone(),
         ExprKind::BinOp(op, l, r) => ExprKind::BinOp(*op, sub!(l), sub!(r)),
         ExprKind::Neg(inner) => ExprKind::Neg(sub!(inner)),
         ExprKind::AndAlso(l, r) => ExprKind::AndAlso(sub!(l), sub!(r)),
@@ -258,6 +259,9 @@ pub(super) fn substitute_into_decls(
 pub(super) fn try_match(pat: &Pattern, value: &Expr) -> Option<Vec<(BinderId, Expr)>> {
     match &pat.pat {
         PatternBase::Wildcard => Some(Vec::new()),
+        // One value inhabits `unit`, so this matches whatever it meets, and
+        // binds nothing.
+        PatternBase::Unit => Some(Vec::new()),
         PatternBase::Var(binder) => Some(vec![(binder.id, value.clone())]),
         PatternBase::IntConst(n) => {
             let ExprKind::IntConst(v) = &value.kind else {

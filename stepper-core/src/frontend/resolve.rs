@@ -115,7 +115,7 @@ fn resolve_cases(scopes: &mut Scopes, cases: &mut [(Pattern, Expr)]) {
 
 fn resolve_expr(scopes: &mut Scopes, expr: &mut Expr) {
     match &mut expr.kind {
-        ExprKind::IntConst(_) | ExprKind::BoolConst(_) => {}
+        ExprKind::IntConst(_) | ExprKind::BoolConst(_) | ExprKind::Unit => {}
         ExprKind::Var(binder) => {
             if let Some(id) = scopes.lookup(&binder.name) {
                 binder.id = id;

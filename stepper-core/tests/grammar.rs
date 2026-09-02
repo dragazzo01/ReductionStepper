@@ -954,7 +954,6 @@ fn rejects_unimplemented_expressions() {
     not_yet("val x = while true do 1", "`while` loops");
     not_yet("val x = 1 : int", "type annotations on expressions");
     not_yet("val x = List.map", "qualified names");
-    not_yet("val x = ()", "unit values");
 }
 
 #[test]
@@ -987,6 +986,40 @@ fn a_fun_needs_at_least_one_argument() {
     rejects(
         "fun f = 3",
         "`f` needs at least one argument to be a `fun`: use `val` instead",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// unit
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parses_the_unit_value() {
+    assert_eq!(expr_of("val x = ()"), Expr::Unit());
+}
+
+#[test]
+fn parses_the_unit_pattern_and_type() {
+    assert_eq!(parse("val () = ()"), vec![val(punit(), Expr::Unit())]);
+    assert_eq!(type_of("val x : unit = ()"), Some(Type::Unit));
+}
+
+#[test]
+fn a_unit_is_not_a_one_tuple() {
+    // `(e)` is just parens, so a `TupleExp` with no components is the only one
+    // that isn't a tuple -- there is no arity-1 case in between.
+    assert_eq!(expr_of("val x = (1)"), Expr::IntConst(1));
+    assert_eq!(
+        expr_of("val x = (1, 2)"),
+        Expr::Tuple(vec![Expr::IntConst(1), Expr::IntConst(2)])
+    );
+}
+
+#[test]
+fn parses_unit_in_function_types() {
+    assert_eq!(
+        type_of("val f : unit -> int = g"),
+        Some(Type::Arrow(Box::new(Type::Unit), Box::new(Type::Int)))
     );
 }
 

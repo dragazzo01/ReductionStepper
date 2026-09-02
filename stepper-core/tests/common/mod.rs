@@ -77,6 +77,9 @@ pub mod expr_builders {
         pub fn BoolConst(b: bool) -> AstExpr {
             AstExpr::new(ExprKind::BoolConst(b))
         }
+        pub fn Unit() -> AstExpr {
+            AstExpr::new(ExprKind::Unit)
+        }
         pub fn Neg(inner: Box<AstExpr>) -> AstExpr {
             AstExpr::new(ExprKind::Neg(inner))
         }
@@ -186,6 +189,11 @@ pub fn pat(base: PatternBase) -> Pattern {
 /// A pattern carrying a `: type` annotation.
 pub fn pat_typed(base: PatternBase, typ: Type) -> Pattern {
     Pattern::new(base, Some(typ))
+}
+
+/// The unit pattern `()`.
+pub fn punit() -> Pattern {
+    pat(PatternBase::Unit)
 }
 
 /// The unannotated variable pattern `name`.

@@ -148,6 +148,7 @@ fn pattern_base_doc(base: &PatternBase, view: &ViewState) -> Doc {
         PatternBase::Wildcard => var("_"),
         PatternBase::IntConst(n) => lit(format_int(*n)),
         PatternBase::BoolConst(b) => lit(b.to_string()),
+        PatternBase::Unit => lit("()".to_string()),
         PatternBase::Tuple(pats) => Doc::group(Doc::concat(vec![
             Doc::text("("),
             Doc::nest(
@@ -173,6 +174,7 @@ pub(super) fn type_string(ty: &Type) -> String {
     match ty {
         Type::Int => "int".to_string(),
         Type::Bool => "bool".to_string(),
+        Type::Unit => "unit".to_string(),
         Type::Product(types) => types
             .iter()
             .map(|t| type_atom_string(t))
@@ -191,7 +193,7 @@ pub(super) fn type_string(ty: &Type) -> String {
 fn type_atom_string(ty: &Type) -> String {
     match ty {
         Type::Product(_) | Type::Arrow(_, _) => format!("({})", type_string(ty)),
-        Type::Int | Type::Bool => type_string(ty),
+        Type::Int | Type::Bool | Type::Unit => type_string(ty),
     }
 }
 
@@ -224,6 +226,9 @@ fn expr_body(expr: &Expr, min_prec: u8, view: &ViewState) -> Doc {
     match &expr.kind {
         ExprKind::IntConst(n) => lit(format_int(*n)),
         ExprKind::BoolConst(b) => lit(b.to_string()),
+        // Self-delimiting, so it prints bare wherever it sits — `min_prec` can
+        // never call for parens around `()`.
+        ExprKind::Unit => lit("()".to_string()),
         ExprKind::Var(binder) => var(&binder.name),
         ExprKind::OrElse(l, r) => binop_doc(l, r, "orelse", (1, 1, 2), min_prec, view),
         ExprKind::AndAlso(l, r) => binop_doc(l, r, "andalso", (2, 2, 3), min_prec, view),
