@@ -194,6 +194,14 @@ fn lower_fun_clause(case: &ast::FunBindCase) -> Result<FunClause> {
         .pats()
         .map(|pat| lower_pat(&pat))
         .collect::<Result<Vec<_>>>()?;
+    // Millet accepts a clause with no parameters so it can say something better
+    // about it later; `fun` binds a function, so there is nothing to elaborate.
+    if params.is_empty() {
+        return Err(Error::at(
+            case.syntax(),
+            format!("`{name}` needs at least one argument to be a `fun`: use `val` instead"),
+        ));
+    }
     let result_ty = case
         .ty_annotation()
         .map(|ann| {

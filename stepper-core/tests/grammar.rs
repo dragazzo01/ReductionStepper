@@ -983,6 +983,14 @@ fn rejects_user_declared_infix_operators() {
 }
 
 #[test]
+fn a_fun_needs_at_least_one_argument() {
+    rejects(
+        "fun f = 3",
+        "`f` needs at least one argument to be a `fun`: use `val` instead",
+    );
+}
+
+#[test]
 fn parses_hexadecimal_literals() {
     assert_eq!(expr_of("val x = 0x1F"), Expr::IntConst(31));
     assert_eq!(expr_of("val x = ~0x10"), Expr::IntConst(-16));
