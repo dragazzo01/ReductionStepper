@@ -1,0 +1,15 @@
+{
+  "name": "stepper-core",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "stepper_core_bg.wasm",
+    "stepper_core.js",
+    "stepper_core.d.ts"
+  ],
+  "main": "stepper_core.js",
+  "types": "stepper_core.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
