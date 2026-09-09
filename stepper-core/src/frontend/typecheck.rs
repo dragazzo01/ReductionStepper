@@ -8,17 +8,25 @@ use crate::pretty::{pretty_print_expr, pretty_print_pattern};
 
 /// Maps each variable — identified by its binding site, not its name — to its
 /// type.
-///
-/// Keying by `BinderId` means shadowing needs no handling at all: an inner
-/// `val x` is a different key from an outer one, so neither can overwrite or hide
-/// the other, and `frontend::resolve` has already decided which one any given use
-/// refers to. The scope-shaped `env.clone()`s below are kept because they say
-/// plainly what scopes what, but with unique ids they no longer carry weight.
+/// 
+/// `frontend::resolve` has already ensured BinderId's are unique
 type TypeEnv = HashMap<BinderId, Type>;
 
-// this will get more complicated as I have type aliases
+/// Whether two types are the same type — which is not the same question as
+/// whether they're the same *tree*, as we have type aliases
 fn same_type(typ1: &Type, typ2: &Type) -> bool {
-    typ1 == typ2
+    match (typ1.resolved(), typ2.resolved()) {
+        (Type::Product(parts1), Type::Product(parts2)) => {
+            parts1.len() == parts2.len()
+                && parts1.iter().zip(parts2).all(|(t1, t2)| same_type(t1, t2))
+        }
+        (Type::Arrow(param1, res1), Type::Arrow(param2, res2)) => {
+            same_type(param1, param2) && same_type(res1, res2)
+        }
+        // `resolved` has stripped every alias, so what's left is a base type and
+        // structural equality is the right answer.
+        (t1, t2) => t1 == t2,
+    }
 }
 
 /// What a binary operator produces when both its operands have type `operand`,
@@ -43,7 +51,9 @@ fn binop_result_type(op: BinOp, operand: &Type) -> Result<Type, String> {
             )),
         };
     }
-    let result = match (op, operand) {
+    // Matched on the *resolved* type, so an alias for `int` is as good as `int`;
+    // the arithmetic arm still hands back `operand` itself, keeping the name.
+    let result = match (op, operand.resolved()) {
         // Arithmetic is overloaded over the two numeric types and gives back
         // whichever it was handed; `div`/`mod` and `/` are each specific to one.
         (BinOp::Add | BinOp::Sub | BinOp::Mul, Type::Int | Type::Real) => Some(operand.clone()),
@@ -69,11 +79,12 @@ fn binop_result_type(op: BinOp, operand: &Type) -> Result<Type, String> {
 /// every argument. `real` is excluded for a reason of its own: `nan` isn't equal
 /// to itself, so `=` on reals wouldn't be an equality at all.
 fn is_equality_type(ty: &Type) -> bool {
-    match ty {
+    match ty.resolved() {
         Type::Int | Type::String | Type::Bool | Type::Unit => true,
         Type::Real => false,
         Type::Product(parts) => parts.iter().all(|part| is_equality_type(part)),
         Type::Arrow(..) => false,
+        Type::Named(..) => unreachable!("`resolved` strips every alias"),
     }
 }
 
@@ -84,17 +95,10 @@ fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
         ExprKind::StringConst(_) => Ok(Type::String),
         ExprKind::BoolConst(_) => Ok(Type::Bool),
         ExprKind::Unit => Ok(Type::Unit),
-        // A use `resolve` found no binder for keeps the id it was minted with,
-        // which nothing else shares — so it misses here, and this is where an
-        // unbound identifier is reported.
         ExprKind::Var(binder) => env
             .get(&binder.id)
             .cloned()
             .ok_or_else(|| format!("Unbound identifier: {}", binder.name)),
-
-        // Both operands of a `BinOp` have the same type, whichever type that is,
-        // so the left one's is inferred and settles the overloading; the operator
-        // then gets to reject it, and the right one is checked against it.
         ExprKind::BinOp(op, e1, e2) => {
             let operand_type = infer_expr_type(env, e1)?;
             let result_type = binop_result_type(*op, &operand_type)?;
@@ -105,8 +109,8 @@ fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
         // back whichever one it was given.
         ExprKind::Neg(e1) => {
             let operand_type = infer_expr_type(env, e1)?;
-            match operand_type {
-                Type::Int | Type::Real => Ok(operand_type),
+            match operand_type.resolved() {
+                Type::Int | Type::Real => Ok(operand_type.clone()),
                 _ => Err(format!("`~` cannot be applied to {operand_type:?}")),
             }
         }
@@ -177,7 +181,7 @@ fn infer_expr_type(env: &TypeEnv, expr: &Expr) -> Result<Type, String> {
         }
         ExprKind::App(f, arg) => {
             let f_ty = infer_expr_type(env, f)?;
-            let Type::Arrow(param_ty, result_ty) = f_ty else {
+            let Type::Arrow(param_ty, result_ty) = f_ty.resolved().clone() else {
                 return Err(format!(
                     "Applying a non-function: `{}` has type {f_ty:?}",
                     pretty_print_expr(f)
@@ -238,7 +242,7 @@ fn check_pattern_type(pattern: &Pattern, expected_type: &Type) -> Result<(), Str
         }
         PatternBase::Var(_) | PatternBase::Wildcard => Ok(()),
         PatternBase::Tuple(pats) => {
-            let Type::Product(expected_typs) = expected_type else {
+            let Type::Product(expected_typs) = expected_type.resolved() else {
                 return Err(format!(
                     "Pattern {} expects a tuple type but got {expected_type:?}",
                     pretty_print_pattern(pattern)
@@ -289,7 +293,7 @@ fn bind_pattern(
             Ok(())
         }
         PatternBase::Tuple(pats) => {
-            let Type::Product(types) = ty else {
+            let Type::Product(types) = ty.resolved() else {
                 return Err(format!(
                     "Pattern {} expects a tuple type but got {ty:?}",
                     pretty_print_pattern(pat)
@@ -332,7 +336,7 @@ fn typecheck_val_rec_decl(env: &mut TypeEnv, decl: &ValDecl) -> Result<(), Strin
     let PatternBase::Var(_) = &decl.pat.pat else {
         return Err(String::from("must use single identifier for val rec"));
     };
-    let Type::Arrow(_, _) = typ else {
+    let Type::Arrow(_, _) = typ.resolved() else {
         return Err(String::from("val rec requires a function type"));
     };
     let ExprKind::Lambda(_) = decl.expr.kind else {
@@ -347,6 +351,9 @@ fn typecheck_decls(env: &mut TypeEnv, decls: &[Decl]) -> Result<(), String> {
         match decl {
             Decl::ValDecl(decl) => typecheck_val_decl(env, decl)?,
             Decl::ValRecDecl(decl) => typecheck_val_rec_decl(env, decl)?,
+            // Nothing to check: `lower` built the definition out of types that
+            // were already valid, and a type binds no value to put in `env`.
+            Decl::TypeDecl(_) => {}
         }
     }
     Ok(())

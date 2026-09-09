@@ -523,6 +523,79 @@ fn reals_are_ordered_but_are_not_an_equality_type() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// type declarations
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_alias_is_transparent() {
+    // `count` and `int` are one type, so they mix freely in both directions.
+    accepts("type count = int\nval n : count = 1 + 2");
+    accepts("type count = int\nval n : count = 1\nval m : int = n + 1");
+    accepts("type count = int\nval n : int = 1\nval m : count = n + 1");
+    // Including through an alias of an alias.
+    accepts("type a = int\ntype b = a\nval x : b = 1\nval y : int = x");
+}
+
+#[test]
+fn an_alias_is_transparent_inside_a_compound_type() {
+    // Resolving only at the top would call these two different types; `same_type`
+    // resolves at every level instead.
+    accepts("type count = int\nval p : count * int = (1, 2)\nval q : int * int = p");
+    accepts("type count = int\nval f : count -> int = fn x : int => x");
+    accepts("type point = int * int\nval p : point = (1, 2)\nval q : int * int = p");
+}
+
+#[test]
+fn an_alias_names_a_function_type() {
+    accepts("type f = int -> int\nval g : f = fn x : int => x + 1\nval v : int = g 4");
+    // `val rec` insists on a function type, and an alias for one is one.
+    accepts(
+        "type f = int -> int\nval rec fact : f = fn n : int => if n = 0 then 1 else n * fact (n - 1)",
+    );
+    rejects(
+        "type t = int\nval rec f : t = fn x : int => x",
+        "val rec requires a function type",
+    );
+}
+
+#[test]
+fn a_type_error_names_the_alias_the_program_used() {
+    // The reason `Type::Named` keeps the name: the message says what was written
+    // rather than what it expands to.
+    rejects(
+        "type count = int\nval n : count = true",
+        "Expected count but got type Bool",
+    );
+    rejects(
+        "type point = int * int\nval p : point = 1",
+        "Expected point but got type Int",
+    );
+}
+
+#[test]
+fn an_alias_inherits_the_operators_of_what_it_stands_for() {
+    accepts("type count = int\nval f = fn x : count => x + 1");
+    accepts("type name = string\nval f = fn s : name => s ^ \"!\"");
+    accepts("type r = real\nval f = fn x : r => x / 2.0");
+    // ...and the operators it doesn't stand for are still refused.
+    rejects(
+        "type name = string\nval f = fn s : name => s + 1",
+        "`+` cannot be applied to name",
+    );
+}
+
+#[test]
+fn an_alias_for_a_real_is_still_not_an_equality_type() {
+    // Naming a type doesn't change what it is, and `is_equality_type` resolves
+    // before deciding.
+    accepts("type r = real\nval b : bool = (fn x : r => x < 1.0) 2.0");
+    rejects(
+        "type r = real\nval f = fn x : r => x = x",
+        "`=` needs an equality type, but r is not one",
+    );
+}
+
 #[test]
 fn only_the_ordered_types_may_be_compared() {
     // `bool` and `unit` are equality types but have no order in SML.

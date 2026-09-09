@@ -59,9 +59,10 @@ fn binding_a_recursive_function_substitutes_its_name_not_its_body() {
         msg,
         "Unrolled fact to fn n : int => if n = 0 then 1 else n * fact (n - 1)"
     );
+    // Unrolling isn't a substitution into surrounding text, so nothing is green.
     assert_eq!(
         show(&program),
-        "val x = [g(fn n : int => if n = 0 then 1 else n * fact (n - 1))g] 3"
+        "val x = (fn n : int => if n = 0 then 1 else n * fact (n - 1)) 3"
     );
 }
 

@@ -116,12 +116,9 @@ pub enum BinOp {
     Add,
     Sub,
     Mul,
-    /// `/`, real division. `div` is the int one — SML spells them differently
-    /// because they are different operators, not two overloadings of one.
     RealDiv,
     Div,
     Mod,
-    /// `^`, string concatenation.
     Concat,
     Eq,
     Ne,
@@ -180,21 +177,52 @@ impl BinOp {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Type {
     Int,
     Real,
     String,
     Bool,
-    /// The type of `()`, whose one value carries no information.
-    ///
-    /// In SML this is the empty record, and so the 0-ary case of `Product` —
-    /// but tuples here are always two or more (one is just parens, and `Product`
-    /// prints by joining with `*`), so spelling it out keeps that invariant and
-    /// costs one match arm wherever `Unit` is genuinely different from a tuple.
     Unit,
     Product(Vec<Box<Type>>),
     Arrow(Box<Type>, Box<Type>),
+    Named(String, Box<Type>),
+}
+
+/// Written out rather than derived for one variant's sake: an alias shows as the
+/// name it was given, so `typecheck`'s messages read "Expected count but got type
+/// Bool" instead of exposing the expansion the user didn't write. Every other
+/// variant keeps exactly the derived spelling, which is what those messages have
+/// always said.
+impl std::fmt::Debug for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Int => f.write_str("Int"),
+            Type::Real => f.write_str("Real"),
+            Type::String => f.write_str("String"),
+            Type::Bool => f.write_str("Bool"),
+            Type::Unit => f.write_str("Unit"),
+            Type::Product(parts) => f.debug_tuple("Product").field(parts).finish(),
+            Type::Arrow(param, res) => f.debug_tuple("Arrow").field(param).field(res).finish(),
+            Type::Named(name, _) => f.write_str(name),
+        }
+    }
+}
+
+impl Type {
+    /// This type with every alias looked through — what to match on whenever the
+    /// question is what a type *is* rather than what it's called.
+    ///
+    /// A loop rather than one step, since an alias can name an alias
+    /// (`type a = int  type b = a`). It always terminates: `lower` only resolves
+    /// a name that is already declared, so no alias can reach itself.
+    pub fn resolved(&self) -> &Type {
+        let mut ty = self;
+        while let Type::Named(_, definition) = ty {
+            ty = definition;
+        }
+        ty
+    }
 }
 
 /// An expression node: its identity, plus its shape.
@@ -246,13 +274,9 @@ impl Expr {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
     IntConst(i64),
-    /// A real literal. `f64`, so `PartialEq` on it is IEEE equality and `nan`
-    /// is unequal to itself — which is exactly why `real` isn't one of SML's
-    /// equality types, and so never reaches `eval::values_equal`.
     RealConst(f64),
     StringConst(String),
     BoolConst(bool),
-    /// `()`. A value, like the other constants — see `Type::Unit`.
     Unit,
     Var(Binder),
     BinOp(BinOp, Box<Expr>, Box<Expr>),
@@ -306,13 +330,6 @@ impl Pattern {
     /// This is what lets `fn (x : int, y : bool) => ...` and its `fun` spelling be
     /// accepted without repeating the type: annotating the components says the same
     /// thing as annotating the whole.
-    ///
-    /// `()` is the one pattern that declares a type without being annotated, and
-    /// it isn't an exception to the rule above so much as the degenerate case of
-    /// it: `unit` has a single value, so a `()` pattern cannot have any other
-    /// type, and there is nothing for the programmer to have chosen. Without this,
-    /// SML's most ordinary use of unit — `fn () => e` — would have to be written
-    /// `fn () : unit => e`.
     pub fn declared_type(&self) -> Option<Type> {
         if let Some(typ) = &self.typ {
             return Some(typ.clone());
@@ -357,12 +374,8 @@ pub enum PatternBase {
     Var(Binder),
     Wildcard,
     IntConst(i64),
-    /// A string literal pattern. There is deliberately no *real* one: SML only
-    /// admits constants of an equality type in a pattern, and `real` isn't one
-    /// (see `ExprKind::RealConst`), so `frontend::lower` rejects it outright.
     StringConst(String),
     BoolConst(bool),
-    /// `()`, which matches the one value of `Type::Unit` and binds nothing.
     Unit,
     Tuple(Vec<Pattern>),
 }
@@ -371,6 +384,7 @@ pub enum PatternBase {
 pub enum Decl {
     ValDecl(ValDecl),
     ValRecDecl(ValDecl),
+    TypeDecl(TypeDecl),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -379,25 +393,61 @@ pub struct ValDecl {
     pub expr: Expr,
 }
 
+/// `type name = definition` — a name for a type, bound to what it stands for.
+///
+/// The only declaration that binds no *value*, which is what makes it the odd
+/// one out for every pass below: it holds no expression to reduce, no pattern to
+/// substitute into, and nothing to look up at run time. `definition` is already
+/// the resolved type (`frontend::lower` did that), so this exists to be printed
+/// and, once, to be stepped away.
+#[derive(Debug, Clone)]
+pub struct TypeDecl {
+    pub id: NodeId,
+    pub name: String,
+    pub definition: Type,
+}
+
+/// Structural equality, ignoring `id` — same reasoning as `PartialEq for Pattern`.
+impl PartialEq for TypeDecl {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.definition == other.definition
+    }
+}
+
+impl TypeDecl {
+    pub fn new(name: impl Into<String>, definition: Type) -> Self {
+        TypeDecl {
+            id: NodeId::fresh(),
+            name: name.into(),
+            definition,
+        }
+    }
+}
+
 impl Decl {
-    pub fn get_val_decl(&self) -> &ValDecl {
+    /// The `val`/`val rec` binding this declaration is, if it is one.
+    pub fn as_val_decl(&self) -> Option<&ValDecl> {
         match self {
-            Self::ValDecl(decl) => decl,
-            Self::ValRecDecl(decl) => decl,
+            Self::ValDecl(decl) | Self::ValRecDecl(decl) => Some(decl),
+            Self::TypeDecl(_) => None,
         }
     }
 
-    pub fn copy_val_type(&self, val_decl: ValDecl) -> Self {
+    /// Maps a declaration if there is one
+    pub fn map_val(&self, f: impl FnOnce(&ValDecl) -> ValDecl) -> Self {
         match self {
-            Self::ValDecl(_) => Self::ValDecl(val_decl),
-            Self::ValRecDecl(_) => Self::ValRecDecl(val_decl),
+            Self::ValDecl(decl) => Self::ValDecl(f(decl)),
+            Self::ValRecDecl(decl) => Self::ValRecDecl(f(decl)),
+            Self::TypeDecl(decl) => Self::TypeDecl(decl.clone()),
         }
     }
 
-    pub fn new_expr(&self, expr: Expr) -> Self {
-        self.copy_val_type(ValDecl {
-            pat: self.get_val_decl().pat.clone(),
-            expr,
+    /// This declaration with its right-hand side replaced, keeping its pattern.
+    pub fn with_expr(&self, expr: Expr) -> Self {
+        let mut expr = Some(expr);
+        self.map_val(|decl| ValDecl {
+            pat: decl.pat.clone(),
+            expr: expr.take().expect("map_val calls `f` at most once"),
         })
     }
 }
@@ -412,8 +462,8 @@ pub type Program = Vec<Decl>;
 /// evaluation order to respect — but anything that just wants to see every node
 /// should.
 pub fn walk_exprs(program: &Program, f: &mut impl FnMut(&Expr)) {
-    for decl in program {
-        walk_expr(&decl.get_val_decl().expr, f);
+    for decl in program.iter().filter_map(Decl::as_val_decl) {
+        walk_expr(&decl.expr, f);
     }
 }
 
@@ -441,8 +491,8 @@ pub fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
         }
         ExprKind::Tuple(items) => items.iter().for_each(|i| walk_expr(i, f)),
         ExprKind::Let(decls, body) => {
-            for decl in decls {
-                walk_expr(&decl.get_val_decl().expr, f);
+            for decl in decls.iter().filter_map(Decl::as_val_decl) {
+                walk_expr(&decl.expr, f);
             }
             walk_expr(body, f);
         }

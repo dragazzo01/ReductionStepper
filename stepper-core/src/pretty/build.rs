@@ -18,7 +18,9 @@
 //! time, because folding one changes its width and therefore the line-breaking of
 //! every group around it.
 
-use crate::ast::{BinOp, Decl, Expr, ExprKind, Pattern, PatternBase, Program, Type, ValDecl};
+use crate::ast::{
+    BinOp, Decl, Expr, ExprKind, Pattern, PatternBase, Program, Type, TypeDecl, ValDecl,
+};
 use crate::view::ViewState;
 
 use super::doc::{Ann, Doc};
@@ -137,6 +139,7 @@ fn decl_doc(decl: &Decl, view: &ViewState) -> Doc {
     let (keyword, ValDecl { pat, expr }) = match decl {
         Decl::ValDecl(d) => ("val", d),
         Decl::ValRecDecl(d) => ("val rec", d),
+        Decl::TypeDecl(d) => return type_decl_doc(d),
     };
     // A right-hand side that brings its own line breaks stays on the `=`'s line
     // and breaks internally; anything else gets a break point before it, for when
@@ -160,6 +163,25 @@ fn decl_doc(decl: &Decl, view: &ViewState) -> Doc {
             expr_doc(expr, 0, view),
         ]),
     ))
+}
+
+/// `type name = ty`, which never breaks: both halves are single tokens.
+///
+/// Annotated as a node so the stepper can paint it — a `type` decl is a redex of
+/// a sort, the one step it takes being to vanish (see `stepping::eval`).
+fn type_decl_doc(decl: &TypeDecl) -> Doc {
+    Doc::ann(
+        Ann::Node(decl.id),
+        Doc::concat(vec![
+            kw("type"),
+            space(),
+            Doc::ann(Ann::Class("ty"), Doc::text(decl.name.clone())),
+            space(),
+            op("="),
+            space(),
+            type_doc(&decl.definition),
+        ]),
+    )
 }
 
 /// Whether `expr` lays itself out over several lines when it doesn't fit, and so
@@ -232,6 +254,9 @@ pub(super) fn type_string(ty: &Type) -> String {
         Type::Arrow(param, result) => {
             format!("{} -> {}", type_atom_string(param), type_string(result))
         }
+        // An alias prints as the name the programmer gave it, which is the whole
+        // point of keeping it in the tree; what it stands for is not shown.
+        Type::Named(name, _) => name.clone(),
     }
 }
 
@@ -240,7 +265,14 @@ pub(super) fn type_string(ty: &Type) -> String {
 fn type_atom_string(ty: &Type) -> String {
     match ty {
         Type::Product(_) | Type::Arrow(_, _) => format!("({})", type_string(ty)),
-        Type::Int | Type::Real | Type::String | Type::Bool | Type::Unit => type_string(ty),
+        // An alias prints as one identifier however compound its definition, so
+        // it needs no parens — that's exactly what naming a type buys.
+        Type::Int
+        | Type::Real
+        | Type::String
+        | Type::Bool
+        | Type::Unit
+        | Type::Named(..) => type_string(ty),
     }
 }
 

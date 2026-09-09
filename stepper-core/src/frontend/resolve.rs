@@ -98,6 +98,9 @@ fn resolve_decls(scopes: &mut Scopes, decls: &mut [Decl]) {
                 scopes.bind(pat);
                 resolve_expr(scopes, expr);
             }
+            // Types live in their own namespace and hold no uses to repoint;
+            // `lower` has already resolved the one name involved.
+            Decl::TypeDecl(_) => {}
         }
     }
 }

@@ -620,10 +620,69 @@ fn compares_reals() {
     assert_eq!(run("val b = 0.0 / 0.0 <= 1.0"), "val b = false");
 }
 
+// ---------------------------------------------------------------------------
+// type declarations
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_type_declaration_is_erased_in_one_step() {
+    // Types don't exist at run time, so the one step a `type` decl takes is to
+    // disappear — it binds nothing, and there is nothing to substitute.
+    let program = parse("type point = int * int\nval p : point = (1, 2)");
+
+    let (program, msg) = step_once(&program);
+    assert_eq!(msg, "Erased type point = int * int");
+    assert_eq!(show(&program), "val p : point = (1, 2)");
+
+    assert_eq!(stepping::step(&program), None);
+}
+
+#[test]
+fn the_alias_survives_every_step_of_the_program_that_uses_it() {
+    // Reduction never rewrites an annotation, so `count` is still `count` at the
+    // end rather than having decayed into `int`.
+    assert_eq!(
+        run("type count = int\nval n : count = 1 + 2"),
+        "val n : count = 3"
+    );
+    assert_eq!(
+        run("type f = int -> int\nval g : f = fn x : int => x + 1\nval v = g 4"),
+        "val v = 5"
+    );
+}
+
+#[test]
+fn a_lone_type_declaration_is_where_reduction_stops() {
+    // Erasing the last declaration would leave an empty program rather than a
+    // result to look at, so the final decl stands whichever kind it is.
+    assert_eq!(run("type point = int * int"), "type point = int * int");
+}
+
+#[test]
+fn a_type_declared_in_a_let_is_erased_like_any_other_decl() {
+    assert_eq!(run("val y = let type t = int val x : t = 5 in x + 1 end"), "val y = 6");
+}
+
+#[test]
+fn an_alias_for_a_tuple_still_destructures() {
+    assert_eq!(
+        run("type point = int * int\nval (a, b) : point = (1, 2)\nval s = a + b"),
+        "val s = 3"
+    );
+}
+
 #[test]
 fn applies_a_function_over_reals() {
     assert_eq!(
         run("val g = fn x : real => x * x\nval v = g 2.5"),
         "val v = 6.25"
     );
+}
+
+#[test]
+fn steps_a_bare_expression_as_a_binding_of_it() {
+    assert_eq!(run("(fn x : int => x * x) 4"), "val it = 16");
+    // `it` is an ordinary binding, so a later declaration can use it — and a
+    // second bare expression simply shadows it, as in a REPL.
+    assert_eq!(run("val x = 5; x + 1; it * 2"), "val it = 12");
 }

@@ -132,14 +132,21 @@ pub fn parse(src: &str) -> Program {
     parse_program(src).unwrap_or_else(|e| panic!("failed to parse `{src}`:\n{e}"))
 }
 
-/// The `i`th declaration's right-hand side.
+/// The `i`th declaration's right-hand side. Panics on a `type` decl, which has
+/// none — a test that wants one asks for `&program[i]` itself.
 pub fn expr_at(program: &Program, i: usize) -> &AstExpr {
-    &program[i].get_val_decl().expr
+    &val_decl_at(program, i).expr
 }
 
 /// The `i`th declaration's pattern, type annotation included.
 pub fn pattern_at(program: &Program, i: usize) -> &Pattern {
-    &program[i].get_val_decl().pat
+    &val_decl_at(program, i).pat
+}
+
+fn val_decl_at(program: &Program, i: usize) -> &ValDecl {
+    program[i]
+        .as_val_decl()
+        .unwrap_or_else(|| panic!("decl {i} binds no value"))
 }
 
 /// The `i`th declaration's pattern with its annotation dropped.

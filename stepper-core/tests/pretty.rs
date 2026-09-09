@@ -136,6 +136,17 @@ fn prints_the_new_types() {
 }
 
 #[test]
+fn prints_a_type_declaration_and_the_alias_by_name() {
+    round_trips("type point = int * int");
+    round_trips("type point = int * int\nval p : point = (1, 2)");
+    round_trips("type f = (int -> int) -> int");
+    // An alias is one identifier however compound its definition, so it never
+    // takes parens — which is exactly what naming a type buys.
+    round_trips("type point = int * int\nval f : point -> point = g");
+    round_trips("type point = int * int\nval p : point * point = q");
+}
+
+#[test]
 fn prints_unary_minus() {
     // Binds tighter than * and needs no parens around a bare atom.
     round_trips("val x = ~2 * 3");

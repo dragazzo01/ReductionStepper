@@ -18,9 +18,10 @@ use super::eval::{is_value, lookup_rec};
 /// The node `step` would reduce next, or `None` if the program is fully reduced.
 pub fn highlight_next(program: &Program) -> Option<NodeId> {
     let first = program.first()?;
-    let expr = &first.get_val_decl().expr;
 
-    if let Some(id) = highlight_next_expr(expr) {
+    if let Some(val) = first.as_val_decl()
+        && let Some(id) = highlight_next_expr(&val.expr)
+    {
         return Some(id);
     }
 
@@ -28,9 +29,21 @@ pub fn highlight_next(program: &Program) -> Option<NodeId> {
         return None;
     }
 
-    // The first decl is a value and there's more program left: it's about to be
-    // substituted into the rest, so it's what's "next".
-    Some(expr.id)
+    // The first decl has nothing left to reduce and there's more program after
+    // it, so what happens next is that it's consumed — substituted into the rest
+    // if it binds a value, erased if it's a `type`. Either way it's what's next,
+    // and `decl_id` names the part of it that gets marked.
+    Some(decl_id(first))
+}
+
+/// The node a decl is marked at: its right-hand side for a `val`, since that's
+/// the value about to be substituted, and the whole declaration for a `type`,
+/// which has no right-hand side and vanishes entire.
+fn decl_id(decl: &Decl) -> NodeId {
+    match decl {
+        Decl::ValDecl(d) | Decl::ValRecDecl(d) => d.expr.id,
+        Decl::TypeDecl(d) => d.id,
+    }
 }
 
 fn highlight_next_expr(expr: &Expr) -> Option<NodeId> {
@@ -108,6 +121,8 @@ fn highlight_next_let(whole: &Expr, decls: &[Decl]) -> Option<NodeId> {
     let Some(first) = decls.first() else {
         return Some(whole.id);
     };
-    let expr = &first.get_val_decl().expr;
-    highlight_next_expr(expr).or(Some(expr.id))
+    match first.as_val_decl() {
+        Some(val) => highlight_next_expr(&val.expr).or(Some(val.expr.id)),
+        None => Some(decl_id(first)),
+    }
 }

@@ -31,13 +31,28 @@
 //!
 //! [millet]: https://github.com/azdavis/millet
 
+use std::collections::HashMap;
+
 use sml_syntax::ast::{self, AstNode as _};
 use sml_syntax::kind::SyntaxNode;
 
 use super::ast::{
-    BinOp, Binder, Decl, Expr, ExprKind, Pattern, PatternBase, Program, Type, ValDecl,
+    BinOp, Binder, Decl, Expr, ExprKind, Pattern, PatternBase, Program, Type, TypeDecl, ValDecl,
 };
 use super::elaborate::{FunClause, elaborate};
+
+/// The type aliases in scope, each name paired with what it stands for.
+///
+/// The one piece of context lowering has to carry. A `ConTy` is only a name, so
+/// deciding whether `point` is an alias — and of what — needs to know which
+/// `type` declarations came before it. Resolving here rather than later is what
+/// lets `Type::Named` carry its own expansion, so no pass after this one needs an
+/// environment at all.
+///
+/// Scoped by cloning at a `let`, so an alias declared inside one doesn't escape
+/// it; a later declaration of the same name simply overwrites, which is the
+/// shadowing rule the rest of the language already follows.
+type TypeAliases = HashMap<String, Type>;
 
 /// Something in the program that can't be lowered, and where in the source it
 /// was. `parse_program` turns the offset into a line and column; keeping it an
@@ -75,7 +90,7 @@ fn require<T>(child: Option<T>, node: &SyntaxNode, what: &str) -> Result<T> {
 
 /// Lowers a whole parsed file.
 pub fn lower(root: &ast::Root) -> Result<Program> {
-    lower_decs(root.decs())
+    lower_decs(root.decs(), &mut TypeAliases::new())
 }
 
 /// The declarations of a file or a `let`, flattened.
@@ -84,19 +99,25 @@ pub fn lower(root: &ast::Root) -> Result<Program> {
 /// which is where SML's optional `;` separators and `sharing` tails live — and a
 /// whole program usually arrives as one `Dec` with many `DecInSeq`s inside it.
 /// None of that structure survives into `Program`, which is a flat `Vec<Decl>`.
-fn lower_decs(decs: impl Iterator<Item = ast::Dec>) -> Result<Vec<Decl>> {
+/// `types` is threaded through *mutably* here, and only here: declarations take
+/// effect in order, so a `type` adds to the aliases the declarations after it can
+/// use.
+fn lower_decs(
+    decs: impl Iterator<Item = ast::Dec>,
+    types: &mut TypeAliases,
+) -> Result<Vec<Decl>> {
     let mut out = Vec::new();
     for dec in decs {
         let tail = require(dec.dec_with_tail(), dec.syntax(), "a declaration")?;
         for seq in tail.dec_in_seqs() {
             let one = require(seq.dec_one(), seq.syntax(), "a declaration")?;
-            out.push(lower_dec(&one)?);
+            out.push(lower_dec(&one, types)?);
         }
     }
     Ok(out)
 }
 
-fn lower_dec(dec: &ast::DecOne) -> Result<Decl> {
+fn lower_dec(dec: &ast::DecOne, types: &mut TypeAliases) -> Result<Decl> {
     match dec {
         ast::DecOne::ValDec(d) => {
             if d.ty_var_seq().is_some_and(|s| s.ty_var_args().next().is_some()) {
@@ -107,8 +128,11 @@ fn lower_dec(dec: &ast::DecOne) -> Result<Decl> {
             if binds.next().is_some() {
                 return unsupported(dec.syntax(), "`val ... and ...` simultaneous bindings");
             }
-            lower_val_bind(&first)
+            lower_val_bind(&first, types)
         }
+        // The one declaration that binds a type rather than a value: it adds to
+        // `types` and is otherwise inert from here on.
+        ast::DecOne::TyDec(d) => lower_ty_dec(d, types),
         ast::DecOne::FunDec(d) => {
             if d.ty_var_seq().is_some_and(|s| s.ty_var_args().next().is_some()) {
                 return unsupported(dec.syntax(), "explicit type variables");
@@ -120,22 +144,24 @@ fn lower_dec(dec: &ast::DecOne) -> Result<Decl> {
             }
             let clauses = first
                 .fun_bind_cases()
-                .map(|case| lower_fun_clause(&case))
+                .map(|case| lower_fun_clause(&case, types))
                 .collect::<Result<Vec<_>>>()?;
             if clauses.is_empty() {
                 return Err(Error::at(d.syntax(), "expected a clause after `fun`"));
             }
             elaborate(clauses).map_err(|message| Error::at(d.syntax(), message))
         }
-        // An expression on its own is not a declaration in SML; millet parses one
-        // anyway so that a language server can say something useful about it, and
-        // it's also what a mis-parsed application degrades into — `val z = f if b
-        // then 1 else 2` comes back as `val z = f` followed by the `if` as its own
-        // `ExpDec` — so this arm catches that too.
-        ast::DecOne::ExpDec(d) => Err(Error::at(
-            d.syntax(),
-            "an expression is not a declaration: bind it with `val`",
-        )),
+        // A bare expression, which the REPL of every SML implementation takes as
+        // `val it = <exp>`; millet parses one as a declaration of its own so that
+        // a language server can say something about it, and lowering it the same
+        // way is what lets the stepper be typed into like a REPL.
+        ast::DecOne::ExpDec(d) => {
+            let exp = require(d.exp(), d.syntax(), "an expression")?;
+            Ok(Decl::ValDecl(ValDecl {
+                pat: Pattern::untyped(PatternBase::Var(Binder::new("it"))),
+                expr: lower_exp(&exp, types)?,
+            }))
+        }
         _ => unsupported(dec.syntax(), dec_description(dec)),
     }
 }
@@ -144,7 +170,6 @@ fn lower_dec(dec: &ast::DecOne) -> Result<Decl> {
 fn dec_description(dec: &ast::DecOne) -> &'static str {
     match dec {
         ast::DecOne::HoleDec(_) => "`...` holes",
-        ast::DecOne::TyDec(_) => "`type` declarations",
         ast::DecOne::DatDec(_) | ast::DecOne::DatCopyDec(_) => "`datatype` declarations",
         ast::DecOne::AbstypeDec(_) => "`abstype` declarations",
         ast::DecOne::ExDec(_) => "`exception` declarations",
@@ -159,16 +184,54 @@ fn dec_description(dec: &ast::DecOne) -> &'static str {
         ast::DecOne::FunctorDec(_) => "`functor` declarations",
         ast::DecOne::IncludeDec(_) => "`include` declarations",
         ast::DecOne::EsImportDec(_) => "`_esImport` declarations",
-        ast::DecOne::ValDec(_) | ast::DecOne::FunDec(_) | ast::DecOne::ExpDec(_) => {
+        ast::DecOne::ValDec(_)
+        | ast::DecOne::FunDec(_)
+        | ast::DecOne::TyDec(_)
+        | ast::DecOne::ExpDec(_) => {
             unreachable!("handled in lower_dec")
         }
     }
 }
 
-fn lower_val_bind(bind: &ast::ValBind) -> Result<Decl> {
-    let pat = lower_pat(&require(bind.pat(), bind.syntax(), "a pattern")?)?;
+/// `type name = ty`, the only declaration that binds a type.
+///
+/// The parameterized forms are turned down rather than lowered: `type 'a pair`
+/// declares a type *constructor*, and `Type` has no arguments to apply — the same
+/// reason `lower_ty` rejects `int list`.
+fn lower_ty_dec(dec: &ast::TyDec, types: &mut TypeAliases) -> Result<Decl> {
+    if dec
+        .ty_head()
+        .is_some_and(|head| matches!(head.kind, ast::TyHeadKind::EqtypeKw))
+    {
+        return unsupported(dec.syntax(), "`eqtype` declarations");
+    }
+    let mut binds = dec.ty_binds();
+    let first = require(binds.next(), dec.syntax(), "a binding after `type`")?;
+    if binds.next().is_some() {
+        return unsupported(dec.syntax(), "`type ... and ...` simultaneous bindings");
+    }
+    if first
+        .ty_var_seq()
+        .is_some_and(|s| s.ty_var_args().next().is_some())
+    {
+        return unsupported(first.syntax(), "parameterized `type` declarations");
+    }
+    let name = require(first.name(), first.syntax(), "a type name")?
+        .text()
+        .to_string();
+    let eq_ty = require(first.eq_ty(), first.syntax(), "`= <type>`")?;
+    let ty = require(eq_ty.ty(), eq_ty.syntax(), "a type")?;
+    // Lowered *before* the name is in scope, so `type t = t` is an unknown type
+    // rather than a cycle — which is what keeps `Type::resolved` terminating.
+    let definition = lower_ty(&ty, types)?;
+    types.insert(name.clone(), definition.clone());
+    Ok(Decl::TypeDecl(TypeDecl::new(name, definition)))
+}
+
+fn lower_val_bind(bind: &ast::ValBind, types: &TypeAliases) -> Result<Decl> {
+    let pat = lower_pat(&require(bind.pat(), bind.syntax(), "a pattern")?, types)?;
     let eq_exp = require(bind.eq_exp(), bind.syntax(), "`= <expression>`")?;
-    let expr = lower_exp(&require(eq_exp.exp(), eq_exp.syntax(), "an expression")?)?;
+    let expr = lower_exp(&require(eq_exp.exp(), eq_exp.syntax(), "an expression")?, types)?;
     let val_decl = ValDecl { pat, expr };
     Ok(if bind.rec_kw().is_some() {
         Decl::ValRecDecl(val_decl)
@@ -179,7 +242,7 @@ fn lower_val_bind(bind: &ast::ValBind) -> Result<Decl> {
 
 /// One clause of a `fun`. [`super::elaborate`] turns the collected clauses into
 /// the `val`/`val rec` they stand for.
-fn lower_fun_clause(case: &ast::FunBindCase) -> Result<FunClause> {
+fn lower_fun_clause(case: &ast::FunBindCase, types: &TypeAliases) -> Result<FunClause> {
     let head = require(case.fun_bind_case_head(), case.syntax(), "a function name")?;
     let name = match head {
         ast::FunBindCaseHead::PrefixFunBindCaseHead(head) => {
@@ -192,7 +255,7 @@ fn lower_fun_clause(case: &ast::FunBindCase) -> Result<FunClause> {
     };
     let params = case
         .pats()
-        .map(|pat| lower_pat(&pat))
+        .map(|pat| lower_pat(&pat, types))
         .collect::<Result<Vec<_>>>()?;
     // Millet accepts a clause with no parameters so it can say something better
     // about it later; `fun` binds a function, so there is nothing to elaborate.
@@ -206,11 +269,11 @@ fn lower_fun_clause(case: &ast::FunBindCase) -> Result<FunClause> {
         .ty_annotation()
         .map(|ann| {
             let ty = require(ann.ty(), ann.syntax(), "a type")?;
-            lower_ty(&ty)
+            lower_ty(&ty, types)
         })
         .transpose()?;
     let eq_exp = require(case.eq_exp(), case.syntax(), "`= <expression>`")?;
-    let body = lower_exp(&require(eq_exp.exp(), eq_exp.syntax(), "an expression")?)?;
+    let body = lower_exp(&require(eq_exp.exp(), eq_exp.syntax(), "an expression")?, types)?;
     Ok(FunClause {
         name,
         params,
@@ -219,7 +282,7 @@ fn lower_fun_clause(case: &ast::FunBindCase) -> Result<FunClause> {
     })
 }
 
-fn lower_exp(exp: &ast::Exp) -> Result<Expr> {
+fn lower_exp(exp: &ast::Exp, types: &TypeAliases) -> Result<Expr> {
     let kind = match exp {
         ast::Exp::SConExp(e) => {
             let scon = require(e.s_con(), e.syntax(), "a constant")?;
@@ -242,12 +305,12 @@ fn lower_exp(exp: &ast::Exp) -> Result<Expr> {
         // Parens carry no meaning into the AST — `pretty/build.rs` puts back
         // whatever the precedences call for.
         ast::Exp::ParenExp(e) => {
-            return lower_exp(&require(e.exp(), e.syntax(), "an expression")?);
+            return lower_exp(&require(e.exp(), e.syntax(), "an expression")?, types);
         }
         ast::Exp::TupleExp(e) => {
             let items = e
                 .exp_args()
-                .map(|arg| lower_exp(&require(arg.exp(), arg.syntax(), "an expression")?))
+                .map(|arg| lower_exp(&require(arg.exp(), arg.syntax(), "an expression")?, types))
                 .collect::<Result<Vec<_>>>()?;
             // `()` is the 0-tuple. Millet gives it the same node as any other
             // tuple; one-element tuples don't exist (those are `ParenExp`), so
@@ -263,11 +326,11 @@ fn lower_exp(exp: &ast::Exp) -> Result<Expr> {
         // `~ f x` stays `(~f) x`.
         ast::Exp::AppExp(e) => {
             let func = require(e.func(), e.syntax(), "a function")?;
-            let arg = lower_exp(&require(e.arg(), e.syntax(), "an argument")?)?;
+            let arg = lower_exp(&require(e.arg(), e.syntax(), "an argument")?, types)?;
             if is_named(&func, "~") {
                 ExprKind::Neg(Box::new(arg))
             } else {
-                ExprKind::App(Box::new(lower_exp(&func)?), Box::new(arg))
+                ExprKind::App(Box::new(lower_exp(&func, types)?), Box::new(arg))
             }
         }
         // Infix operators arrive by name, already grouped by precedence — the
@@ -279,43 +342,50 @@ fn lower_exp(exp: &ast::Exp) -> Result<Expr> {
             let Some(op) = BinOp::from_symbol(symbol) else {
                 return unsupported(e.syntax(), &format!("the operator `{symbol}`"));
             };
-            let lhs = lower_exp(&require(e.lhs(), e.syntax(), "an expression")?)?;
-            let rhs = lower_exp(&require(e.rhs(), e.syntax(), "an expression")?)?;
+            let lhs = lower_exp(&require(e.lhs(), e.syntax(), "an expression")?, types)?;
+            let rhs = lower_exp(&require(e.rhs(), e.syntax(), "an expression")?, types)?;
             ExprKind::BinOp(op, Box::new(lhs), Box::new(rhs))
         }
         ast::Exp::AndalsoExp(e) => {
-            let lhs = lower_exp(&require(e.lhs(), e.syntax(), "an expression")?)?;
-            let rhs = lower_exp(&require(e.rhs(), e.syntax(), "an expression")?)?;
+            let lhs = lower_exp(&require(e.lhs(), e.syntax(), "an expression")?, types)?;
+            let rhs = lower_exp(&require(e.rhs(), e.syntax(), "an expression")?, types)?;
             ExprKind::AndAlso(Box::new(lhs), Box::new(rhs))
         }
         ast::Exp::OrelseExp(e) => {
-            let lhs = lower_exp(&require(e.lhs(), e.syntax(), "an expression")?)?;
-            let rhs = lower_exp(&require(e.rhs(), e.syntax(), "an expression")?)?;
+            let lhs = lower_exp(&require(e.lhs(), e.syntax(), "an expression")?, types)?;
+            let rhs = lower_exp(&require(e.rhs(), e.syntax(), "an expression")?, types)?;
             ExprKind::OrElse(Box::new(lhs), Box::new(rhs))
         }
         ast::Exp::IfExp(e) => {
-            let cond = lower_exp(&require(e.cond(), e.syntax(), "a condition")?)?;
-            let yes = lower_exp(&require(e.yes(), e.syntax(), "a `then` branch")?)?;
-            let no = lower_exp(&require(e.no(), e.syntax(), "an `else` branch")?)?;
+            let cond = lower_exp(&require(e.cond(), e.syntax(), "a condition")?, types)?;
+            let yes = lower_exp(&require(e.yes(), e.syntax(), "a `then` branch")?, types)?;
+            let no = lower_exp(&require(e.no(), e.syntax(), "an `else` branch")?, types)?;
             ExprKind::If(Box::new(cond), Box::new(yes), Box::new(no))
         }
         ast::Exp::CaseExp(e) => {
-            let scrutinee = lower_exp(&require(e.exp(), e.syntax(), "an expression")?)?;
+            let scrutinee = lower_exp(&require(e.exp(), e.syntax(), "an expression")?, types)?;
             let matcher = require(e.matcher(), e.syntax(), "match arms")?;
-            ExprKind::Match(Box::new(scrutinee), lower_matcher(&matcher)?)
+            ExprKind::Match(Box::new(scrutinee), lower_matcher(&matcher, types)?)
         }
         ast::Exp::FnExp(e) => {
             let matcher = require(e.matcher(), e.syntax(), "match arms")?;
-            ExprKind::Lambda(lower_matcher(&matcher)?)
+            ExprKind::Lambda(lower_matcher(&matcher, types)?)
         }
+        // A `let` scopes types as well as values, so its declarations extend a
+        // *copy* of the aliases: a `type` declared inside doesn't outlive the
+        // `end`.
         ast::Exp::LetExp(e) => {
-            let decls = lower_decs(e.decs())?;
+            let mut inner = types.clone();
+            let decls = lower_decs(e.decs(), &mut inner)?;
             let mut body = e.exps_in_seq();
             let first = require(body.next(), e.syntax(), "an expression after `in`")?;
             if body.next().is_some() {
                 return unsupported(e.syntax(), "`;` expression sequences");
             }
-            let body = lower_exp(&require(first.exp(), first.syntax(), "an expression")?)?;
+            let body = lower_exp(
+                &require(first.exp(), first.syntax(), "an expression")?,
+                &inner,
+            )?;
             ExprKind::Let(decls, Box::new(body))
         }
         _ => return unsupported(exp.syntax(), exp_description(exp)),
@@ -341,18 +411,18 @@ fn exp_description(exp: &ast::Exp) -> &'static str {
     }
 }
 
-fn lower_matcher(matcher: &ast::Matcher) -> Result<Vec<(Pattern, Expr)>> {
+fn lower_matcher(matcher: &ast::Matcher, types: &TypeAliases) -> Result<Vec<(Pattern, Expr)>> {
     matcher
         .arms()
         .map(|arm| {
-            let pat = lower_pat(&require(arm.pat(), arm.syntax(), "a pattern")?)?;
-            let exp = lower_exp(&require(arm.exp(), arm.syntax(), "an expression")?)?;
+            let pat = lower_pat(&require(arm.pat(), arm.syntax(), "a pattern")?, types)?;
+            let exp = lower_exp(&require(arm.exp(), arm.syntax(), "an expression")?, types)?;
             Ok((pat, exp))
         })
         .collect()
 }
 
-fn lower_pat(pat: &ast::Pat) -> Result<Pattern> {
+fn lower_pat(pat: &ast::Pat, types: &TypeAliases) -> Result<Pattern> {
     let base = match pat {
         ast::Pat::WildcardPat(_) => PatternBase::Wildcard,
         // A real literal is the one constant SML won't let you match on: a pattern
@@ -386,12 +456,12 @@ fn lower_pat(pat: &ast::Pat) -> Result<Pattern> {
             }
         }
         ast::Pat::ParenPat(p) => {
-            return lower_pat(&require(p.pat(), p.syntax(), "a pattern")?);
+            return lower_pat(&require(p.pat(), p.syntax(), "a pattern")?, types);
         }
         ast::Pat::TuplePat(p) => {
             let items = p
                 .pat_args()
-                .map(|arg| lower_pat(&require(arg.pat(), arg.syntax(), "a pattern")?))
+                .map(|arg| lower_pat(&require(arg.pat(), arg.syntax(), "a pattern")?, types))
                 .collect::<Result<Vec<_>>>()?;
             match items.is_empty() {
                 true => PatternBase::Unit,
@@ -401,8 +471,8 @@ fn lower_pat(pat: &ast::Pat) -> Result<Pattern> {
         // The annotation attaches to the pattern already built, keeping its id —
         // `x` and `x : int` are the same place on screen.
         ast::Pat::TypedPat(p) => {
-            let inner = lower_pat(&require(p.pat(), p.syntax(), "a pattern")?)?;
-            let ty = lower_ty(&require(p.ty(), p.syntax(), "a type")?)?;
+            let inner = lower_pat(&require(p.pat(), p.syntax(), "a pattern")?, types)?;
+            let ty = lower_ty(&require(p.ty(), p.syntax(), "a type")?, types)?;
             return Ok(Pattern {
                 id: inner.id,
                 pat: inner.pat,
@@ -427,14 +497,21 @@ fn pat_description(pat: &ast::Pat) -> &'static str {
     }
 }
 
-fn lower_ty(ty: &ast::Ty) -> Result<Type> {
+fn lower_ty(ty: &ast::Ty, types: &TypeAliases) -> Result<Type> {
     match ty {
         ast::Ty::ConTy(t) => {
             if t.ty_seq().is_some() {
                 return unsupported(t.syntax(), "type constructors with arguments");
             }
             let path = require(t.path(), t.syntax(), "a type name")?;
-            match single_name(&path, t.syntax())?.as_str() {
+            let name = single_name(&path, t.syntax())?;
+            // Aliases are looked up first, so a `type` declaration shadows a base
+            // type the way SML lets it. The alias keeps its *name* alongside the
+            // type it stands for — that pairing is the whole of `Type::Named`.
+            if let Some(definition) = types.get(&name) {
+                return Ok(Type::Named(name, Box::new(definition.clone())));
+            }
+            match name.as_str() {
                 "int" => Ok(Type::Int),
                 "real" => Ok(Type::Real),
                 "string" => Ok(Type::String),
@@ -444,25 +521,25 @@ fn lower_ty(ty: &ast::Ty) -> Result<Type> {
             }
         }
         ast::Ty::FnTy(t) => {
-            let param = lower_ty(&require(t.param(), t.syntax(), "a type")?)?;
-            let res = lower_ty(&require(t.res(), t.syntax(), "a type")?)?;
+            let param = lower_ty(&require(t.param(), t.syntax(), "a type")?, types)?;
+            let res = lower_ty(&require(t.res(), t.syntax(), "a type")?, types)?;
             Ok(Type::Arrow(Box::new(param), Box::new(res)))
         }
         // `t1 * t2 * t3` arrives as one head plus a list of `* t`, and stays flat:
         // `Type::Product` is n-ary, and SML's `*` doesn't associate anyway.
         ast::Ty::TupleTy(t) => {
-            let head = lower_ty(&require(t.ty(), t.syntax(), "a type")?)?;
+            let head = lower_ty(&require(t.ty(), t.syntax(), "a type")?, types)?;
             let mut parts = vec![Box::new(head)];
             for star in t.star_tys() {
                 let ty = require(star.ty(), star.syntax(), "a type")?;
-                parts.push(Box::new(lower_ty(&ty)?));
+                parts.push(Box::new(lower_ty(&ty, types)?));
             }
             match <[Box<Type>; 1]>::try_from(parts) {
                 Ok([only]) => Ok(*only),
                 Err(parts) => Ok(Type::Product(parts)),
             }
         }
-        ast::Ty::ParenTy(t) => lower_ty(&require(t.ty(), t.syntax(), "a type")?),
+        ast::Ty::ParenTy(t) => lower_ty(&require(t.ty(), t.syntax(), "a type")?, types),
         ast::Ty::OneArgConTy(t) => unsupported(t.syntax(), "type constructors with arguments"),
         ast::Ty::TyVarTy(t) => unsupported(t.syntax(), "type variables"),
         ast::Ty::RecordTy(t) => unsupported(t.syntax(), "record types"),

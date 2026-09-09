@@ -1,7 +1,7 @@
 use crate::ast::{
     BinOp, Binder, BinderId, Decl, Expr, ExprKind, NodeId, Pattern, Program, ValDecl,
 };
-use crate::pretty::{pretty_print_expr, pretty_print_pattern};
+use crate::pretty::{pretty_print_expr, pretty_print_pattern, pretty_print_type};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -184,11 +184,10 @@ fn step_var(binder: &Binder) -> Option<Step> {
         binder.name,
         pretty_print_expr(&lambda)
     );
-    let green = vec![lambda.id];
     Some(Step {
         expr: lambda,
         message,
-        green,
+        green: Vec::new(),
     })
 }
 
@@ -323,8 +322,20 @@ fn step_if(whole: &Expr, cond: &Expr, then_branch: &Expr, else_branch: &Expr) ->
 /// so there's nothing to rewrite. Before variables carried binder ids this had to
 /// substitute the function's name for a freshly-invented unique spelling of it,
 /// which is what the old `factA` renaming was for.
+/// A `type` decl hands over nothing at all and says so: it binds no value, and
+/// types are gone before anything runs, so the one step it takes is to disappear.
 fn decl_bindings(decl: &Decl) -> (Vec<(BinderId, Expr)>, String) {
-    let ValDecl { pat, expr } = decl.get_val_decl();
+    let Some(ValDecl { pat, expr }) = decl.as_val_decl() else {
+        let Decl::TypeDecl(ty_decl) = decl else {
+            unreachable!("only a type decl binds no value")
+        };
+        let message = format!(
+            "Erased type {} = {}",
+            ty_decl.name,
+            pretty_print_type(&ty_decl.definition)
+        );
+        return (Vec::new(), message);
+    };
     match decl {
         Decl::ValDecl(_) => {
             let bindings = destructure(pat, expr);
@@ -350,6 +361,7 @@ fn decl_bindings(decl: &Decl) -> (Vec<(BinderId, Expr)>, String) {
             );
             (Vec::new(), message)
         }
+        Decl::TypeDecl(_) => unreachable!("handled above: a type decl binds nothing"),
     }
 }
 
@@ -376,12 +388,15 @@ fn step_let(whole: &Expr, decls: &[Decl], body: &Expr) -> Option<Step> {
     let Some(first_decl) = decls.first() else {
         panic!("Empty `let` expression")
     };
-    let first = first_decl.get_val_decl();
 
-    if !is_value(&first.expr) {
+    // A `type` decl has no right-hand side to reduce, so it falls straight
+    // through to being consumed below.
+    if let Some(first) = first_decl.as_val_decl()
+        && !is_value(&first.expr)
+    {
         let step = step_expr(&first.expr)?;
         let mut new_decls = decls.to_vec();
-        new_decls[0] = first_decl.new_expr(step.expr);
+        new_decls[0] = first_decl.with_expr(step.expr);
         return Some(Step {
             expr: whole.same_id(ExprKind::Let(new_decls, Box::new(body.clone()))),
             message: step.message,
@@ -633,12 +648,15 @@ fn values_equal(l: &Expr, r: &Expr) -> bool {
 /// business, and the `green` ids returned here simply replace them.
 pub fn step(program: &Program) -> Option<StepOutcome> {
     let first = program.first()?;
-    let expr = &first.get_val_decl().expr;
 
-    if !is_value(expr) {
-        let step = step_expr(expr)?;
+    // A `type` decl has no right-hand side to reduce, so it falls straight
+    // through to being consumed below.
+    if let Some(val) = first.as_val_decl()
+        && !is_value(&val.expr)
+    {
+        let step = step_expr(&val.expr)?;
         let mut new_program = program.to_vec();
-        new_program[0] = first.new_expr(step.expr);
+        new_program[0] = first.with_expr(step.expr);
         return Some(StepOutcome {
             program: new_program,
             message: step.message,
@@ -646,6 +664,9 @@ pub fn step(program: &Program) -> Option<StepOutcome> {
         });
     }
 
+    // The last declaration is where reduction stops, whichever kind it is: a
+    // lone `type` decl computes nothing, so erasing it would leave an empty
+    // program rather than a result to look at.
     if program.len() == 1 {
         return None;
     }

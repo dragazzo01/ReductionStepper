@@ -218,6 +218,19 @@ fn a_lambda_alone_is_a_value_with_nothing_to_highlight() {
 }
 
 #[test]
+fn a_type_declaration_about_to_be_erased_is_marked_whole() {
+    // A `val` is marked at its right-hand side, since that's the value about to be
+    // substituted; a `type` decl has no right-hand side and vanishes entire, so
+    // the whole declaration is what gets painted.
+    assert_eq!(
+        render_next(&parse("type point = int * int\nval p : point = (1, 2)")),
+        "[ytype point = int * inty]\nval p : point = (1, 2)"
+    );
+    // Nothing left to do once it's the only declaration.
+    assert_eq!(stepping::highlight_next(&parse("type t = int")), None);
+}
+
+#[test]
 fn strings_and_reals_are_values_their_operators_reduce_like_any_other() {
     // Nothing about the search changes for the new base types: a literal is a
     // value, so the innermost operator whose operands are both literals is next.

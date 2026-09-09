@@ -6,9 +6,8 @@
   <style>
     body {
       font-family: system-ui, sans-serif;
-      max-width: 52rem;
-      margin: 2rem auto;
-      padding: 0 1rem;
+      margin: 2rem 0;
+      padding: 0 1.5rem;
       line-height: 1.5;
     }
 
@@ -52,8 +51,8 @@
   <h1>Reduction Stepper</h1>
 
   <p>
-    Enter a sequence of SML <code>val</code> declarations and hit Step to watch them
-    reduce one redex at a time. The expression about to be evaluated is highlighted
+    Enter a sequence of SML declarations and hit Step to watch them
+    reduce one step at a time. The expression about to be evaluated is highlighted
     in yellow; anything a substitution just placed is highlighted in green.
     <strong>Click any <code>fn</code> to fold it away</strong> — folding is
     display-only, so the program underneath keeps stepping as it was.
@@ -62,7 +61,14 @@
   <details>
     <summary>What the language supports</summary>
     <ol>
-      <li>Declarations use <code>val</code>, <code>val rec</code> or <code>fun</code>.</li>
+      <li>Declarations use <code>val</code>, <code>val rec</code>, <code>fun</code>
+        or <code>type</code>. An expression on its own is a declaration too:
+        like a REPL, it's read as <code>val it = …</code>. Separate it from a
+        preceding declaration with <code>;</code>, as SML does.</li>
+      <li>A <code>type</code> names a type
+        (<code>type point = int * int</code>); it's transparent, so
+        <code>point</code> and <code>int * int</code> are the same type, and it
+        steps away before anything runs, since types don't exist at run time.</li>
       <li>Lambdas must annotate their parameter, and <code>val rec</code> must
         annotate the whole type — there's no inference engine yet.</li>
       <li>Expressions: <code>int</code>, <code>real</code>, <code>string</code>,

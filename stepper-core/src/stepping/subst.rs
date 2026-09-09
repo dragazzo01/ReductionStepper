@@ -49,8 +49,8 @@ pub(super) fn fresh_copy(expr: &Expr) -> Expr {
         let patterns: &[(Pattern, Expr)] = match &e.kind {
             ExprKind::Lambda(cases) | ExprKind::Match(_, cases) => cases,
             ExprKind::Let(decls, _) => {
-                for decl in decls {
-                    for binder in decl.get_val_decl().pat.binders() {
+                for decl in decls.iter().filter_map(Decl::as_val_decl) {
+                    for binder in decl.pat.binders() {
                         renaming.insert(binder.id, BinderId::fresh());
                     }
                 }
@@ -99,8 +99,7 @@ fn renamed_decls(decls: &[Decl], renaming: &HashMap<BinderId, BinderId>) -> Vec<
     decls
         .iter()
         .map(|d| {
-            let val_decl = d.get_val_decl();
-            d.copy_val_type(crate::ast::ValDecl {
+            d.map_val(|val_decl| crate::ast::ValDecl {
                 pat: renamed_pattern(&val_decl.pat, renaming),
                 expr: renamed_expr(&val_decl.expr, renaming),
             })
@@ -242,7 +241,12 @@ pub(super) fn substitute_into_decls(
 ) -> Vec<Decl> {
     decls
         .iter()
-        .map(|d| d.new_expr(substitute(&d.get_val_decl().expr, target, value, placed)))
+        .map(|d| {
+            d.map_val(|val_decl| crate::ast::ValDecl {
+                pat: val_decl.pat.clone(),
+                expr: substitute(&val_decl.expr, target, value, placed),
+            })
+        })
         .collect()
 }
 

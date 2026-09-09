@@ -618,7 +618,7 @@ fn val_and_val_rec_are_distinct_decls() {
     assert!(matches!(recursive[0], Decl::ValRecDecl(_)));
     // Same `ValDecl` payload underneath — only the variant differs, which is what
     // `get_val_decl` exists to see past.
-    assert_eq!(plain[0].get_val_decl(), recursive[0].get_val_decl());
+    assert_eq!(plain[0].as_val_decl(), recursive[0].as_val_decl());
     assert_ne!(plain, recursive);
 }
 
@@ -729,10 +729,18 @@ fn let_is_an_atomic_expression() {
             ))
         )
     );
-    // The open-ended forms still need parens, as they do in real SML.
-    assert!(parse_program("val z = f if b then 1 else 2").is_err());
-    assert!(parse_program("val z = f case x of _ => 1").is_err());
-    assert!(parse_program("val z = f fn x : int => x").is_err());
+    // The open-ended forms are not `atexp`s, so they are never taken as the
+    // argument: each one ends the `val` and starts a declaration of its own,
+    // which is now the bare-expression form below.
+    for src in [
+        "val z = f if b then 1 else 2",
+        "val z = f case x of _ => 1",
+        "val z = f fn x : int => x",
+    ] {
+        let program = parse(src);
+        assert_eq!(program.len(), 2, "parsing `{src}`");
+        assert_eq!(expr_at(&program, 0), &ident("f"), "parsing `{src}`");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -933,7 +941,10 @@ fn not_yet(src: &str, what: &str) {
 #[test]
 fn rejects_unimplemented_declarations() {
     not_yet("datatype t = A | B", "`datatype` declarations");
-    not_yet("type t = int", "`type` declarations");
+    // Plain `type` is lowered now; the parameterized forms aren't, since `Type`
+    // has no arguments to apply.
+    not_yet("type 'a pair = 'a * 'a", "parameterized `type` declarations");
+    not_yet("type t = int and u = bool", "`type ... and ...`");
     not_yet("exception E", "`exception` declarations");
     not_yet(
         "structure S = struct val x = 1 end",
@@ -966,11 +977,28 @@ fn rejects_operators_it_cannot_evaluate() {
 }
 
 #[test]
-fn an_expression_is_not_a_declaration() {
-    // Millet parses a bare expression so that a language server can say something
-    // useful about it; there's nothing here to bind it to.
-    let error = parse_program("1 + 2").expect_err("a bare expression is not a program");
-    assert!(error.contains("bind it with `val`"), "got: {error}");
+fn a_bare_expression_binds_it() {
+    // Every SML REPL takes an expression on its own as `val it = <exp>`, and so
+    // does this one — `it` is an ordinary binding, visible to what follows.
+    assert_eq!(
+        parse("1 + 2"),
+        vec![val(
+            pvar("it"),
+            Expr::Add(Box::new(Expr::IntConst(1)), Box::new(Expr::IntConst(2))),
+        )]
+    );
+    // As in a real REPL, a `;` is what ends the declaration before it: without
+    // one, `5 x` would be an application, since a newline separates nothing.
+    assert_eq!(
+        parse("val x = 5; x * 2"),
+        vec![
+            val(pvar("x"), Expr::IntConst(5)),
+            val(
+                pvar("it"),
+                Expr::Mul(Box::new(ident("x")), Box::new(Expr::IntConst(2))),
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -1154,6 +1182,87 @@ fn parses_real_division_at_the_same_precedence_as_times() {
             Box::new(ident("c")),
         )
     );
+}
+
+// ---------------------------------------------------------------------------
+// type declarations
+// ---------------------------------------------------------------------------
+
+/// The alias `name` stands for, as `program`'s `i`th declaration records it.
+fn type_decl_at(program: &[Decl], i: usize) -> (&str, &Type) {
+    match &program[i] {
+        Decl::TypeDecl(d) => (&d.name, &d.definition),
+        other => panic!("expected a type decl, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_a_type_declaration() {
+    let program = parse("type point = int * int");
+    assert_eq!(
+        type_decl_at(&program, 0),
+        (
+            "point",
+            &Type::Product(vec![Box::new(Type::Int), Box::new(Type::Int)])
+        )
+    );
+}
+
+#[test]
+fn a_use_of_an_alias_carries_what_it_stands_for() {
+    // The whole of `Type::Named`: the name the programmer wrote, and the type it
+    // resolves to, settled here so no later pass needs an environment.
+    let program = parse("type count = int\nval n : count = 1");
+    let ty = type_at(&program, 1).expect("an annotation");
+    assert_eq!(
+        ty,
+        &Type::Named("count".to_string(), Box::new(Type::Int))
+    );
+    // ...and `resolved` sees through it.
+    assert_eq!(ty.resolved(), &Type::Int);
+}
+
+#[test]
+fn an_alias_may_name_an_alias() {
+    let program = parse("type a = int\ntype b = a\nval x : b = 5");
+    let ty = type_at(&program, 2).expect("an annotation");
+    assert_eq!(ty.resolved(), &Type::Int);
+    // Nested rather than flattened, so each name is still recoverable.
+    assert_eq!(
+        ty,
+        &Type::Named(
+            "b".to_string(),
+            Box::new(Type::Named("a".to_string(), Box::new(Type::Int)))
+        )
+    );
+}
+
+#[test]
+fn a_type_declared_in_a_let_does_not_escape_it() {
+    // Types scope like values do. Outside the `let`, `t` is simply not a type
+    // this crate knows.
+    parse("val y = let type t = int val x : t = 5 in x + 1 end");
+    let error = parse_program("val y = let type t = int in 1 end\nval z : t = 2")
+        .expect_err("`t` is out of scope");
+    assert!(error.contains("the type `t`"), "got: {error}");
+}
+
+#[test]
+fn a_later_type_declaration_shadows_an_earlier_one() {
+    let program = parse("type t = int\ntype t = bool\nval x : t = true");
+    assert_eq!(
+        type_at(&program, 2).expect("an annotation").resolved(),
+        &Type::Bool
+    );
+}
+
+#[test]
+fn an_alias_cannot_refer_to_itself() {
+    // The definition is lowered *before* the name is in scope, so this is an
+    // unknown type rather than a cycle — which is what keeps `Type::resolved`
+    // from looping.
+    let error = parse_program("type t = t\nval x : t = 1").expect_err("`t` isn't declared yet");
+    assert!(error.contains("the type `t`"), "got: {error}");
 }
 
 #[test]

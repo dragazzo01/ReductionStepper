@@ -260,10 +260,9 @@ fn collect_names(expr: &Expr, out: &mut HashSet<String>) {
             collect_names(else_branch, out);
         }
         ExprKind::Let(decls, body) => {
-            for decl in decls {
-                let ValDecl { pat, expr } = decl.get_val_decl();
-                collect_pattern_names(pat, out);
-                collect_names(expr, out);
+            for decl in decls.iter().filter_map(Decl::as_val_decl) {
+                collect_pattern_names(&decl.pat, out);
+                collect_names(&decl.expr, out);
             }
             collect_names(body, out);
         }

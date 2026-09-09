@@ -71,3 +71,10 @@ fun average (x : real, y : real) : real = (x + y) / 2.0
 val mid = average (1.5, 4.0)
 val big = mid > 2.0
 val neg = ~mid
+
+# Type declarations: a name for a type, erased before anything runs
+type point = int * int
+type move = point -> point
+val shift : move = fn (x : int, y : int) => (x + 1, y + 1)
+val here : point = (2, 3)
+val there = shift here
